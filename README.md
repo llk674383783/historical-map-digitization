@@ -14,7 +14,6 @@
 - `index.html`：项目首页，提供工具入口和功能介绍。
 - `historical_map_annotator_compact_page.html`：历史地图标注工具。
 - `Georeferencing_page.html`：在线地理配准工具。
-- `.nojekyll`：用于 GitHub Pages，避免静态文件被 Jekyll 处理。
 
 ## 核心能力
 
@@ -187,28 +186,6 @@ lat = D * x + E * y + F
 
 GeoJSON 坐标顺序为 `[longitude, latitude]`，即 `[经度, 纬度]`。
 
-## GitHub Pages 部署
-
-本项目是纯静态网页，适合直接部署到 GitHub Pages。
-
-部署步骤：
-
-1. 在 GitHub 新建一个仓库。
-2. 将本目录下的全部文件上传到仓库根目录。
-3. 确认仓库根目录中存在 `index.html`。
-4. 进入仓库 `Settings` -> `Pages`。
-5. 在 `Build and deployment` 中选择 `Deploy from a branch`。
-6. 分支选择 `main`，目录选择 `/root` 或 `/`。
-7. 保存设置。
-8. 等待 GitHub Pages 构建完成。
-9. 访问 GitHub 提供的 Pages 地址。
-
-如果仓库名为 `historical-map-digitization`，你的页面地址通常类似：
-
-```text
-https://你的用户名.github.io/historical-map-digitization/
-```
-
 ## 本地使用
 
 直接用浏览器打开 `index.html` 即可使用。
@@ -252,7 +229,3 @@ http://localhost:8000/
 - 方志地图、舆图、旧版地形图的结构化整理。
 - 早期遥感图像或扫描图件的轻量级配准。
 - 文史研究者、地理信息初学者和教学场景中的在线演示。
-
-## 许可证
-
-如需开源发布，建议在仓库中补充明确的开源许可证文件，例如 MIT License、Apache License 2.0 或 CC BY 4.0。若地图图像、底图或标注数据包含第三方版权内容，请单独确认授权范围。
