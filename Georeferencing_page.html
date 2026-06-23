@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>历史地图配准 Pro (最终完善版)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/openseadragon@4.1.1/build/openseadragon/openseadragon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<style>
+  :root {
+    --accent: #2563eb;
+    --bg-body: #f8fafc;
+    --bg-stage: #e2e8f0;
+    --border-light: #e2e8f0;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+  }
+  
+  html, body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    font-family: Inter, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text-main); background: var(--bg-body); overflow: hidden;
+  }
+
+  /* 优雅的细体定制滚动条 */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+  header {
+    padding: 0.8rem 1.5rem; border-bottom: 1px solid var(--border-light);
+    background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    z-index: 5000; display: flex; gap: 1rem; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  }
+  header h1 { font-size: 1.15rem; margin: 0; font-weight: 600; color: #0f172a; letter-spacing: -0.01em; display:flex; align-items:center; gap:6px; }
+  
+  .btn {
+    border: 1px solid var(--border-light); padding: 0.45rem 0.8rem; border-radius: 8px;
+    background: #fff; cursor: pointer; font-size: 0.9em; font-weight: 500;
+    transition: all 0.2s ease; color: var(--text-main); display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; gap: 6px;
+  }
+  .btn:hover:not(:disabled) { border-color: #cbd5e1; background: #f8fafc; transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+  .btn:active:not(:disabled) { transform: translateY(0); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+  .btn.secondary { background: #f1f5f9; border-color: transparent; }
+  .btn.secondary:hover:not(:disabled) { background: #e2e8f0; }
+  .btn.toggled { box-shadow: 0 0 0 2px rgba(37,99,235,.2) inset; background: #eff6ff; border-color: #bfdbfe; color: var(--accent); font-weight: 600; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  
+  .divider { width: 1px; height: 20px; background: var(--border-light); margin: 0 4px; }
+  .hidden { display: none !important; }
+
+  #workspace { flex: 1; display: flex; position: relative; z-index: 1; min-height: 0; }
+  #left-pane { flex: 1; position: relative; background: var(--bg-stage); border-right: 1px solid var(--border-light); overflow: hidden; }
+  #left-pane::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 24px 24px; pointer-events: none; opacity: 0.6; }
+  #osd-viewer { position: absolute; inset: 0; }
+  #overlayCanvas { position: absolute; inset: 0; pointer-events: none; z-index: 50; }
+  
+  #right-pane { flex: 1; position: relative; background: var(--bg-body); }
+  #leaflet-map { width: 100%; height: 100%; }
+
+  .tdt-control, .osd-control {
+    position: absolute; top: 12px; z-index: 1000;
+    background: rgba(255,255,255,0.95); backdrop-filter: blur(4px);
+    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-light);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08); display: flex; gap: 8px; font-size: 13px; align-items: center;
+  }
+  .tdt-control { right: 12px; }
+  .osd-control { right: 12px; }
+  select { padding: 4px 8px; border: 1px solid var(--border-light); border-radius: 6px; font-size: 13px; outline:none; background:#fff; color:var(--text-main); }
+  
+  .tag { position:absolute; top:12px; left:12px; padding:6px 10px; background:rgba(255,255,255,0.95); backdrop-filter: blur(4px); border:1px solid var(--border-light); border-radius:8px; font-size:12px; font-weight:600; color:var(--text-main); pointer-events:none; z-index:100; box-shadow:0 2px 6px rgba(0,0,0,0.05); }
+
+  #control-panel {
+    position:fixed; bottom:0; left:0; right:0; height:320px;
+    background:#fff; border-top:1px solid var(--border-light);
+    display:flex; flex-direction:column; z-index:9000;
+    box-shadow:0 -10px 30px rgba(0,0,0,0.05);
+    transition:transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+  }
+  #control-panel.collapsed { transform:translateY(calc(100% - 44px)); }
+  
+  .panel-header { height:44px; padding:0 1.5rem; background:#f8fafc; border-bottom:1px solid var(--border-light); display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none; }
+  .panel-body { flex:1; display:flex; overflow:hidden; }
+  
+  .gcp-list { flex:1; overflow:auto; position:relative; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:10px 16px; background:#f8fafc; position:sticky; top:0; z-index:2; font-weight:600; color:var(--text-muted); border-bottom:1px solid var(--border-light); }
+  td { padding:8px 16px; border-bottom:1px solid var(--border-light); color:var(--text-main); }
+  tr:hover { background: #fbfbfc; }
+  tr.active { background:#eff6ff; }
+  
+  .sidebar { width:280px; padding:16px; border-left:1px solid var(--border-light); background:#fff; display:flex; flex-direction:column; gap:12px; z-index:5; overflow-y:auto; }
+  .stat { display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); }
+  .val { font-family:monospace; font-weight:600; color:#0f172a; }
+
+  .crosshair .openseadragon-canvas { cursor:crosshair !important; }
+  .leaflet-container.crosshair { cursor:crosshair !important; }
+  
+  .pin { 
+    width:22px; height:22px; border-radius:50%; 
+    background:#ef4444; border:2px solid #fff; 
+    box-shadow:0 3px 6px rgba(0,0,0,0.2); color:#fff; 
+    font-size:11px; font-weight:bold; font-family: Inter, sans-serif;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .osd-pin { transform: translate(-50%, -50%); }
+
+  #loadingOverlay { position:fixed; inset:0; background:rgba(255,255,255,0.85); backdrop-filter:blur(10px); z-index:10000; display:none; flex-direction:column; align-items:center; justify-content:center; }
+  .progress-bar { width:320px; height:6px; background:#e2e8f0; border-radius:99px; overflow:hidden; margin-top:1.2rem; box-shadow:inset 0 1px 2px rgba(0,0,0,0.05); }
+  .progress-fill { height:100%; background:var(--accent); width:0%; transition:width 0.15s ease-out; }
+  #loadingText { margin-top:0.8rem; color:var(--text-muted); font-size:0.9em; font-weight:500; font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+
+<div id="loadingOverlay">
+  <h3 style="margin:0; font-weight:600; color:#1e293b; font-size:1.2rem;">正在处理地图</h3>
+  <div id="loadingText">准备读取...</div>
+  <div class="progress-bar"><div class="progress-fill" id="loadBar"></div></div>
+</div>
+
+<header>
+  <h1>🗺️ 地图配准 Pro</h1>
+  <div class="divider"></div>
+  
+  <label class="btn secondary">
+    📂 打开图片
+    <input type="file" id="imgInput" accept=".tif,.tiff,.jpg,.png,.jpeg" class="hidden">
+  </label>
+
+  <label class="btn secondary" title="加载本地 .tfw 坐标文件">
+    📄 导入 TFW
+    <input type="file" id="tfwInput" accept=".tfw,.jgw,.wld,.txt" class="hidden">
+  </label>
+  
+  <button class="btn hidden" id="btnPreview" style="color:var(--accent); border-color:#bfdbfe; background:#eff6ff;">👁️ 叠加预览</button>
+  <button class="btn hidden secondary" id="btnExportTiff" title="将当前配准导出为 GeoTIFF">💾 导出 GeoTIFF</button>
+
+  <span style="flex:1"></span>
+  
+  <span style="font-size:12px; color:var(--text-muted); font-weight:500;">辅助功能:</span>
+  <button class="btn secondary" onclick="document.getElementById('jsonInput').click()">导入原标注</button>
+  <button class="btn primary" id="btnExport" disabled>导出 GeoJSON</button>
+  <input type="file" id="jsonInput" accept=".json" class="hidden">
+</header>
+
+<div id="workspace">
+  <div id="left-pane">
+    <div class="tag">古地图 (左键选点)</div>
+    <div id="osd-viewer"></div>
+    <canvas id="overlayCanvas"></canvas>
+    
+    <div class="osd-control">
+      <span style="font-size:12px; color:var(--text-main); font-weight:600;">画布方向</span>
+      <input type="range" id="osd-rotation" min="0" max="360" value="0" style="width: 100px; cursor: ew-resize; margin:0;" oninput="updateRotation(this.value)">
+      <span id="osd-deg-label" style="font-size:12px; color:var(--text-muted); width:32px; text-align:right; font-variant-numeric: tabular-nums;">0°</span>
+      <button class="btn secondary" style="padding:0; width:26px; height:26px; font-size:14px; border:none; background:transparent;" onclick="resetRotation()" title="重置方向">↺</button>
+    </div>
+  </div>
+  
+  <div id="right-pane">
+    <div class="tag">现代地图 (右键选点)</div>
+    <div id="leaflet-map"></div>
+    
+    <div class="tdt-control">
+      <select id="mapTypeSelect">
+        <option value="vec">矢量底图</option>
+        <option value="img">影像底图</option>
+        <option value="ter">地形底图</option>
+      </select>
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-weight:500; color:var(--text-main);">
+        <input type="checkbox" id="showLabelCheck" checked style="accent-color:var(--accent);">
+        显示注记
+      </label>
+    </div>
+  </div>
+</div>
+
+<div id="control-panel">
+  <div class="panel-header" onclick="togglePanel()">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <span style="font-weight:600; font-size:14px; color:#0f172a;">📍 控制点 (GCPs)</span>
+      <span id="badge" style="background:var(--border-light); padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; color:var(--text-muted);">0</span>
+      
+      <div class="divider" style="height:16px;"></div>
+      
+      <select id="transformOrder" style="height:26px; font-size:12px; padding:0 6px;" onclick="event.stopPropagation()" onchange="tryCalc()">
+        <option value="1">一阶多项式 (仿射)</option>
+        <option value="2" disabled>二阶多项式 (需6点)</option>
+        <option value="3" disabled>三阶多项式 (需10点)</option>
+      </select>
+      
+      <span style="font-size:12px; font-weight:600; color:var(--text-muted); margin-left:8px;">
+        总误差(RMS): <span id="rms-display" style="color:#ef4444; font-family:monospace; margin-left:4px;">-</span>
+      </span>
+    </div>
+    <span style="font-size:11px; font-weight:500; color:#94a3b8;">▲ 展开/收起</span>
+  </div>
+  
+  <div class="panel-body">
+    <div class="gcp-list">
+      <table id="gcpTable">
+        <thead>
+          <tr><th width="40">ID</th><th>源坐标 (Pixel X, Y)</th><th>目标坐标 (Lon, Lat)</th><th>残差 (px)</th><th width="50">操作</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="emptyTip" style="padding:40px; text-align:center; color:#94a3b8; font-size:13px; font-weight:500;">
+        加载地图后<br>点击“添加控制点”或导入文件
+      </div>
+    </div>
+    
+    <div class="sidebar">
+      <button id="btnPick" class="btn primary" style="justify-content:center; height:38px; font-size:14px;">+ 添加控制点模式</button>
+      <div style="height:1px; background:var(--border-light); margin:4px 0;"></div>
+      <div class="stat"><span>状态</span><span id="status" class="val" style="color:#f59e0b">未就绪</span></div>
+      
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn secondary" style="flex:1; font-size:12px;" onclick="exportGCPs()">⬇ 导出 ArcGIS 格式</button>
+        <button class="btn secondary" style="flex:1; font-size:12px;" onclick="document.getElementById('gcpInput').click()">⬆ 导入点位</button>
+        <input type="file" id="gcpInput" accept=".txt,.csv" class="hidden" onchange="importGCPs(this)">
+      </div>
+
+      <div style="flex:1"></div>
+      <button id="btnDownTFW" class="btn primary" style="justify-content:center; height:36px;" disabled>下载 .tfw 文件</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let viewer, map, overlayCanvas, ctx;
+let currentImg = null; 
+let tiffPool = null;
+let gcps = [];
+let importedData = []; // 用于存放解析后的 JSON 标注数据
+let isPickMode = false;
+let activeGcpId = null; 
+let affineParams = null; // [A, D, B, E, C, F]
+let overlayLayer = null;
+let tdtLayerGroup = null;
+
+const TDT_KEY = "a76b9ea6e49fb0eecdb1ed34d1e75930";
+const TILE_SIZE = 256;
+const tempCanvas = document.createElement('canvas');
+tempCanvas.width = TILE_SIZE; tempCanvas.height = TILE_SIZE;
+const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+
+function init() {
+  map = L.map('leaflet-map', { crs: L.CRS.EPSG4326, zoomControl:false }).setView([35.0, 105.0], 4);
+  L.control.zoom({ position:'topright' }).addTo(map);
+  updateTiandituLayers();
+
+  document.getElementById('mapTypeSelect').addEventListener('change', updateTiandituLayers);
+  document.getElementById('showLabelCheck').addEventListener('change', updateTiandituLayers);
+  map.on('click', onLeafletClick);
+
+  viewer = OpenSeadragon({
+    id: "osd-viewer",
+    prefixUrl: "https://unpkg.com/openseadragon@4.1.1/build/openseadragon/images/",
+    showNavigator: true, animationTime: 0.3, blendTime: 0.1, minZoomImageRatio: 0.1, maxZoomPixelRatio: Infinity, gestureSettingsMouse: { clickToZoom: false }
+  });
+  viewer.addHandler('canvas-click', onOSDClick);
+
+  // 初始化标注 Overlay Canvas
+  overlayCanvas = document.getElementById('overlayCanvas');
+  ctx = overlayCanvas.getContext('2d');
+  requestAnimationFrame(drawAnnotations);
+
+  document.getElementById('imgInput').onchange = handleImageUpload;
+  document.getElementById('tfwInput').onchange = handleTFWUpload;
+  document.getElementById('btnPick').onclick = togglePickMode;
+  document.getElementById('btnDownTFW').onclick = downloadTFW;
+  document.getElementById('btnExport').onclick = exportGeoJSON;
+  document.getElementById('btnPreview').onclick = toggleOverlay;
+  document.getElementById('btnExportTiff').onclick = exportGeoTIFF;
+  document.getElementById('jsonInput').onchange = importJSON;
+  
+  window.addEventListener('keydown', e => { if(e.key==='Escape' && isPickMode) togglePickMode(); });
+}
+
+// ====== 绘图辅助函数 (移植自标注系统) ======
+function imagePointToScreenPx(x,y){
+  if (!viewer || viewer.world.getItemCount() === 0) return new OpenSeadragon.Point(0,0);
+  const img = new OpenSeadragon.Point(x,y);
+  const vp = viewer.world.getItemAt(0).imageToViewportCoordinates(img);
+  return viewer.viewport.pixelFromPoint(vp, true);
+}
+function pixelsPerImagePixel(){
+  if (!viewer || !currentImg || viewer.world.getItemCount() === 0) return 1;
+  const a = imagePointToScreenPx(0,0);
+  const b = imagePointToScreenPx(1,0);
+  return Math.hypot(b.x-a.x, b.y-a.y);
+}
+function deg2rad(d){ return d * Math.PI / 180; }
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function isFiniteNumber(v){ return typeof v === 'number' && Number.isFinite(v); }
+function normalizeAnnotationRecord(raw, index = 0) {
+  if (!raw || typeof raw !== 'object') return null;
+  const x = Number(raw.anchor?.x);
+  const y = Number(raw.anchor?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const normalized = { ...raw };
+  normalized.id = String(raw.id ?? `imported_${index + 1}`);
+  normalized.text = String(raw.text ?? '');
+  normalized.anchor = { x, y };
+  normalized.aliases = Array.isArray(raw.aliases) ? raw.aliases.map(v => String(v)) : [];
+  normalized.orientation = raw.orientation === 'vertical' ? 'vertical' : 'horizontal';
+  if (raw.angleDeg !== undefined) {
+    const angle = Number(raw.angleDeg);
+    if (Number.isFinite(angle)) normalized.angleDeg = angle;
+    else delete normalized.angleDeg;
+  }
+  return normalized;
+}
+function normalizeAnnotationList(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((item, index) => normalizeAnnotationRecord(item, index)).filter(Boolean);
+}
+
+function drawAnnotations() {
+  if (!viewer || !currentImg || viewer.world.getItemCount() === 0 || importedData.length === 0) {
+      requestAnimationFrame(drawAnnotations); return; 
+  }
+  const size = viewer.viewport.getContainerSize();
+  overlayCanvas.width = size.x; overlayCanvas.height = size.y;
+  ctx.clearRect(0,0,overlayCanvas.width,overlayCanvas.height);
+  
+  const ppp = pixelsPerImagePixel();
+  const vpBounds = viewer.viewport.getBounds(true);
+  const imgBounds = viewer.world.getItemAt(0).viewportToImageRectangle(vpBounds);
+  const buffer = 500 / viewer.viewport.getZoom(); 
+  const viewLeft = imgBounds.x - buffer, viewRight = imgBounds.x + imgBounds.width + buffer;
+  const viewTop = imgBounds.y - buffer, viewBottom = imgBounds.y + imgBounds.height + buffer;
+
+  importedData.forEach(a => {
+    if (!a || !a.anchor || !isFiniteNumber(a.anchor.x) || !isFiniteNumber(a.anchor.y)) return;
+    if (a.anchor.x < viewLeft || a.anchor.x > viewRight || a.anchor.y < viewTop || a.anchor.y > viewBottom) return; 
+    
+    const pt = imagePointToScreenPx(a.anchor.x, a.anchor.y);
+    const scale = ppp;
+    const fontPx = (a.style?.fontSizePxAtScale1 ?? 22) * scale;
+    const spacing = (a.style?.letterSpacing ?? 1.5) * scale;
+    const fill = a.style?.fill ?? '#000000';
+    const alpha = typeof a.meta?.opacity === 'number' ? clamp(a.meta.opacity,0,1) : 1;
+    const strokeColor = a.style?.stroke?.color ?? '#ffffff';
+    const strokeW = (a.style?.stroke?.width ?? 2) * scale;
+    const isVertical = (a.orientation === 'vertical');
+
+    ctx.save(); ctx.translate(pt.x, pt.y);
+    if (a.angleDeg) ctx.rotate(deg2rad(a.angleDeg));
+    ctx.font = `${fontPx}px "${a.style?.fontFamily || 'Noto Serif SC'}, serif"`;
+    ctx.textBaseline = 'middle'; ctx.textAlign = isVertical ? 'center' : 'left'; 
+    ctx.globalAlpha = alpha;
+    if (strokeW>0){ ctx.lineWidth = strokeW; ctx.strokeStyle = strokeColor; drawText(ctx,a,spacing,true); }
+    ctx.fillStyle = fill; drawText(ctx,a,spacing,false);
+    ctx.restore();
+  });
+  requestAnimationFrame(drawAnnotations);
+}
+
+function drawText(ctx, a, spacing, stroke){
+  if (a.orientation === 'vertical'){
+    let totalHeight = 0;
+    for(const ch of a.text) { totalHeight += ctx.measureText(ch).actualBoundingBoxAscent + ctx.measureText(ch).actualBoundingBoxDescent + spacing; }
+    totalHeight -= spacing; let currentYOffset = -totalHeight / 2; 
+    for (const ch of a.text){
+      const m = ctx.measureText(ch); const chH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent; const drawY = currentYOffset + chH/2; 
+      if (stroke) ctx.strokeText(ch, 0, drawY); else ctx.fillText(ch, 0, drawY);
+      currentYOffset += chH + spacing;
+    }
+  } else {
+    let curX = 0;
+    for (const ch of a.text){ if (stroke) ctx.strokeText(ch, curX, 0); else ctx.fillText(ch, curX, 0); curX += ctx.measureText(ch).width + spacing; }
+  }
+}
+// ====== 绘图逻辑结束 ======
+
+function updateTiandituLayers() {
+  const type = document.getElementById('mapTypeSelect').value; 
+  const showLabel = document.getElementById('showLabelCheck').checked;
+  if (tdtLayerGroup) { tdtLayerGroup.clearLayers(); } else { tdtLayerGroup = L.layerGroup().addTo(map); }
+  const baseUrl = `https://t{s}.tianditu.gov.cn/${type}_c/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${type}&STYLE=default&TILEMATRIXSET=c&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${TDT_KEY}`;
+  const baseLayer = L.tileLayer(baseUrl, { subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'], zIndex: 0, zoomOffset: 1 });
+  tdtLayerGroup.addLayer(baseLayer);
+  if (showLabel) {
+    let annoType = 'cva'; if (type === 'img') annoType = 'cia'; if (type === 'ter') annoType = 'cta';
+    const annoUrl = `https://t{s}.tianditu.gov.cn/${annoType}_c/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${annoType}&STYLE=default&TILEMATRIXSET=c&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${TDT_KEY}`;
+    const annoLayer = L.tileLayer(annoUrl, { subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'], zIndex: 10, zoomOffset: 1 });
+    tdtLayerGroup.addLayer(annoLayer);
+  }
+}
+
+// 新增：地图旋转逻辑
+function updateRotation(deg) {
+  if(viewer && viewer.viewport) {
+    viewer.viewport.setRotation(parseFloat(deg));
+    document.getElementById('osd-deg-label').innerText = Math.round(deg) + '°';
+  }
+}
+function resetRotation() {
+  const slider = document.getElementById('osd-rotation');
+  if(slider) { slider.value = 0; updateRotation(0); }
+}
+
+async function handleImageUpload(e) {
+  const file = e.target.files[0];
+  if(!file) return;
+  resetAll(); 
+  resetRotation();
+  showLoading(true, "初始化...", 0);
+  try {
+    const lowerName = file.name.toLowerCase();
+    const id = file.name.replace(/\.[^.]+$/, '');
+    const isTiff = file.type === 'image/tiff' || lowerName.endsWith('.tif') || lowerName.endsWith('.tiff');
+    if (!isTiff) document.getElementById('btnExportTiff').classList.remove('hidden');
+    else document.getElementById('btnExportTiff').classList.add('hidden');
+
+    if (isTiff) {
+        if (!tiffPool) tiffPool = new GeoTIFF.Pool();
+        await loadGeoTIFF(file, id);
+    } else {
+        await loadStandardImage(file, id);
+    }
+    updateStatus("请配准", "#f59e0b");
+  } catch(err) { alert("加载失败: " + err.message); } finally { showLoading(false); }
+}
+
+async function loadStandardImage(file, id) {
+  showLoading(true, "解码...", 50);
+  const bmp = await createImageBitmap(file);
+  currentImg = { width:bmp.width, height:bmp.height, name:file.name, type:'bitmap', bitmap:bmp };
+  createPreviewBlob(bmp, bmp.width, bmp.height);
+  const tileSource = {
+      width: bmp.width, height: bmp.height, tileSize: TILE_SIZE,
+      minLevel: 0, maxLevel: Math.ceil(Math.log2(Math.max(bmp.width, bmp.height))),
+      getTileUrl: (level, x, y) => `virtual_std_${level}_${x}_${y}`,
+      downloadTileStart: function(context) {
+          const parts = context.src.split('_');
+          const level = parseInt(parts[2]), x = parseInt(parts[3]), y = parseInt(parts[4]);
+          const blob = sliceBitmap(bmp, bmp.width, bmp.height, level, x, y);
+          if (blob) {
+              const img = new Image(); const url = URL.createObjectURL(blob);
+              img.onload = () => { context.finish(img); URL.revokeObjectURL(url); };
+              img.src = url;
+          } else { context.finish(null); }
+      }
+  };
+  viewer.open(tileSource);
+}
+
+async function loadGeoTIFF(file, id) {
+    const setProgress = (pct, text) => {
+        document.getElementById('loadBar').style.width = pct + '%';
+        document.getElementById('loadingText').textContent = text;
+    };
+    setProgress(5, '解析 TIFF...');
+    const tiff = await GeoTIFF.fromBlob(file); 
+    const firstImage = await tiff.getImage(); 
+    const width = firstImage.getWidth();
+    const height = firstImage.getHeight();
+    const imageCount = await tiff.getImageCount();
+    const tiffImages = [];
+    for(let i=0; i<imageCount; i++){
+        const img = await tiff.getImage(i);
+        tiffImages.push({ index: i, width: img.getWidth(), height: img.getHeight(), instance: img });
+    }
+    tiffImages.sort((a,b)=>b.width - a.width);
+
+    let overviewCanvas = null;
+    if (tiffImages.length === 1) {
+        setProgress(10, '构建概览 (分块)...');
+        const TARGET_WIDTH = 2048;
+        const scaleFactor = TARGET_WIDTH / width;
+        const TARGET_HEIGHT = Math.floor(height * scaleFactor);
+        overviewCanvas = document.createElement('canvas');
+        overviewCanvas.width = TARGET_WIDTH; overviewCanvas.height = TARGET_HEIGHT;
+        const ovCtx = overviewCanvas.getContext('2d');
+        const CHUNK_SIZE = 2048; 
+        const cols = Math.ceil(width / CHUNK_SIZE); const rows = Math.ceil(height / CHUNK_SIZE);
+        const totalChunks = cols * rows; let processed = 0; const promises = [];
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const chunkX = c * CHUNK_SIZE; const chunkY = r * CHUNK_SIZE;
+                const chunkW = Math.min(CHUNK_SIZE, width - chunkX); const chunkH = Math.min(CHUNK_SIZE, height - chunkY);
+                const destX = chunkX * scaleFactor; const destY = chunkY * scaleFactor;
+                const destW = chunkW * scaleFactor; const destH = chunkH * scaleFactor;
+                const bufferW = Math.ceil(destW); const bufferH = Math.ceil(destH);
+                promises.push(
+                    firstImage.readRasters({ window: [chunkX, chunkY, chunkX + chunkW, chunkY + chunkH], width: bufferW, height: bufferH, interleave: true, pool: tiffPool })
+                    .then(raster => {
+                        const iData = new ImageData(bufferW, bufferH); const arr = raster; const data = iData.data; let j = 0; const len = bufferW * bufferH;
+                        if (arr.length >= len * 3) { for (let i = 0; i < len; i++) { data[j] = arr[i*3]; data[j+1]=arr[i*3+1]; data[j+2]=arr[i*3+2]; data[j+3]=255; j+=4; } } 
+                        else { for (let i = 0; i < len; i++) { const v = arr[i]; data[j]=v; data[j+1]=v; data[j+2]=v; data[j+3]=255; j += 4; } }
+                        const tCanvas = document.createElement('canvas'); tCanvas.width = bufferW; tCanvas.height = bufferH;
+                        tCanvas.getContext('2d').putImageData(iData, 0, 0);
+                        ovCtx.drawImage(tCanvas, 0, 0, bufferW, bufferH, destX, destY, destW, destH);
+                        processed++; setProgress(10 + Math.floor((processed/totalChunks)*80), `概览 ${processed}/${totalChunks}`);
+                    })
+                );
+            }
+        }
+        await Promise.all(promises);
+    }
+    
+    currentImg = { id, width, height, tiff, tiffImages, overviewCanvas, type: 'tiff', name:file.name };
+    setProgress(95, '渲染...');
+    const tileSource = {
+        width: width, height: height, tileSize: TILE_SIZE, minLevel: 0, maxLevel: Math.ceil(Math.log2(Math.max(width, height))),
+        getTileUrl: (level, x, y) => `virtual_tif_${level}_${x}_${y}`,
+        downloadTileStart: function(context) {
+            const parts = context.src.split('_');
+            const level = parseInt(parts[2]), x = parseInt(parts[3]), y = parseInt(parts[4]);
+            const maxLevel = Math.ceil(Math.log2(Math.max(width, height)));
+            const scale = Math.pow(0.5, maxLevel - level);
+            const tileW_in_Original = TILE_SIZE / scale;
+            if (currentImg.overviewCanvas && tileW_in_Original > 1024) {
+                const blob = sliceCanvas(currentImg.overviewCanvas, width, height, level, x, y);
+                if (blob) { const img = new Image(); const url = URL.createObjectURL(blob); img.onload = () => { context.finish(img); URL.revokeObjectURL(url); }; img.src = url; return; }
+            }
+            const levelFullWidth = width * scale; let bestImage = tiffImages[0];
+            for(let i=0; i<tiffImages.length; i++) { if (tiffImages[i].width >= levelFullWidth / 1.5) { bestImage = tiffImages[i]; } }
+            const ratio = bestImage.width / width;
+            const regionW_Full = TILE_SIZE / scale; const regionX_Full = x * regionW_Full; const regionY_Full = y * regionW_Full;
+            const readX = Math.floor(regionX_Full * ratio); const readY = Math.floor(regionY_Full * ratio);
+            const readW = Math.floor(regionW_Full * ratio); const readH = Math.floor(regionW_Full * ratio);
+            if (readX >= bestImage.width || readY >= bestImage.height) { context.finish(null); return; }
+            const finalReadW = Math.min(readW, bestImage.width - readX); const finalReadH = Math.min(readH, bestImage.height - readY);
+            bestImage.instance.readRasters({ window: [readX, readY, readX + finalReadW, readY + finalReadH], width: TILE_SIZE, height: TILE_SIZE, interleave: true, pool: tiffPool })
+            .then((raster) => {
+                const tileCanvas = document.createElement('canvas'); tileCanvas.width = TILE_SIZE; tileCanvas.height = TILE_SIZE;
+                const tileCtx = tileCanvas.getContext('2d'); const imgData = tileCtx.createImageData(TILE_SIZE, TILE_SIZE);
+                const data = imgData.data; const arr = raster; let j = 0; const len = TILE_SIZE*TILE_SIZE;
+                if (arr.length >= len*3) { for (let i = 0; i < len; i++) { data[j] = arr[i*3]; data[j+1] = arr[i*3+1]; data[j+2] = arr[i*3+2]; data[j+3] = 255; j += 4; } } 
+                else { for (let i = 0; i < len; i++) { const v = arr[i]; data[j]=v; data[j+1]=v; data[j+2]=v; data[j+3]=255; j += 4; } }
+                tileCtx.putImageData(imgData, 0, 0); context.finish(tileCanvas);
+            }).catch(e => { context.finish(null); });
+        }
+    };
+    if(currentImg.overviewCanvas){ currentImg.overviewCanvas.toBlob(b => currentImg.previewBlob = b, 'image/jpeg', 0.8); }
+    viewer.open(tileSource); setProgress(100, '完成');
+}
+
+function sliceCanvas(sourceCanvas, fullW, fullH, level, x, y) {
+    const maxLevel = Math.ceil(Math.log2(Math.max(fullW, fullH))); const scale = Math.pow(0.5, maxLevel - level);
+    const regionW = TILE_SIZE / scale; const regionH = TILE_SIZE / scale; const regionX = x * regionW; const regionY = y * regionH;
+    if (regionX >= fullW || regionY >= fullH) return null;
+    const canvasScale = sourceCanvas.width / fullW;
+    const sx = regionX * canvasScale; const sy = regionY * canvasScale; const sWidth = regionW * canvasScale; const sHeight = regionH * canvasScale;
+    tempCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE); tempCtx.drawImage(sourceCanvas, sx, sy, sWidth, sHeight, 0, 0, TILE_SIZE, TILE_SIZE);
+    return dataURItoBlob(tempCanvas.toDataURL('image/jpeg', 0.85)); 
+}
+function sliceBitmap(bmp, fw, fh, level, x, y) {
+  const maxLevel = Math.ceil(Math.log2(Math.max(fw, fh))); const scale = Math.pow(0.5, maxLevel - level);
+  const rw = TILE_SIZE/scale, rh = TILE_SIZE/scale; const rx = x*rw, ry = y*rh;
+  if(rx>=fw || ry>=fh) return null;
+  tempCtx.clearRect(0,0,TILE_SIZE,TILE_SIZE); tempCtx.drawImage(bmp, rx, ry, rw, rh, 0,0, TILE_SIZE, TILE_SIZE);
+  return dataURItoBlob(tempCanvas.toDataURL('image/jpeg', 0.8));
+}
+function dataURItoBlob(d) {
+  const b = atob(d.split(',')[1]), a = new Uint8Array(b.length); for(let i=0;i<b.length;i++) a[i]=b.charCodeAt(i); return new Blob([a],{type:'image/jpeg'});
+}
+function createPreviewBlob(img, w, h) {
+  const c = document.createElement('canvas'); const sc = Math.min(1, 1024/w); c.width = w*sc; c.height = h*sc;
+  c.getContext('2d').drawImage(img,0,0,c.width,c.height); c.toBlob(b => currentImg.previewBlob = b, 'image/jpeg', 0.8);
+}
+
+async function handleTFWUpload(e) {
+  const file = e.target.files[0];
+  if(!file) return;
+  if(!currentImg) return alert("请先加载图片！");
+  const text = await file.text();
+  const lines = text.trim().split(/\s+/).map(Number);
+  if(lines.length < 6 || lines.slice(0, 6).some(v => !Number.isFinite(v))) return alert("TFW 格式错误：请提供 6 个有效数字。");
+  affineParams = lines.slice(0, 6);
+  onParamsReady("已导入 TFW");
+  alert("提示：请确保导入的 TFW/TIF 坐标系为 CGCS2000/WGS84 地理坐标系(经纬度)。");
+}
+
+/* -------------------------------------------------------------
+   L.AffineLayer (防崩溃修复版)
+------------------------------------------------------------- */
+function toggleOverlay() {
+  if(!affineParams || !currentImg || !currentImg.previewBlob) return alert("无预览数据");
+  if(overlayLayer) { map.removeLayer(overlayLayer); overlayLayer = null; document.getElementById('btnPreview').innerText = "👁️ 叠加预览"; return; }
+  
+  L.AffineLayer = L.Layer.extend({
+    onAdd: function(map) {
+        this._map = map;
+        this._canvas = L.DomUtil.create('canvas', ''); 
+        this._canvas.style.pointerEvents = 'none';
+        this._canvas.style.position = 'absolute'; 
+        this.getPane().appendChild(this._canvas);
+        this._img = new Image();
+        this._img.src = URL.createObjectURL(currentImg.previewBlob);
+        this._img.onload = () => { this._loaded=true; this._reset(); };
+        map.on('move moveend zoomend viewreset resize', this._reset, this);
+    },
+    onRemove: function(map) {
+        this.getPane().removeChild(this._canvas);
+        map.off('move moveend zoomend viewreset resize', this._reset, this);
+        if(this._img.src) URL.revokeObjectURL(this._img.src);
+    },
+    _reset: function() {
+        if(!this._loaded || !affineParams) return;
+        const map = this._map; const size = map.getSize();
+        const canvas = this._canvas; const ctx = canvas.getContext('2d');
+        const topLeft = map.containerPointToLayerPoint([0, 0]);
+        L.DomUtil.setPosition(canvas, topLeft); canvas.width = size.x; canvas.height = size.y;
+        ctx.clearRect(0, 0, size.x, size.y);
+
+        const w = currentImg.width, h = currentImg.height;
+        const p0_ll = pixelToLatLon(0, 0), pX_ll = pixelToLatLon(w, 0), pY_ll = pixelToLatLon(0, h);
+        if (!isValidLatLng(p0_ll) || !isValidLatLng(pX_ll) || !isValidLatLng(pY_ll)) return;
+
+        const p0 = map.latLngToContainerPoint(p0_ll), pX = map.latLngToContainerPoint(pX_ll), pY = map.latLngToContainerPoint(pY_ll);
+        const m11 = (pX.x - p0.x) / w, m12 = (pX.y - p0.y) / w;
+        const m21 = (pY.x - p0.x) / h, m22 = (pY.y - p0.y) / h;
+        const dx = p0.x, dy = p0.y;
+        
+        const params = [m11, m12, m21, m22, dx, dy];
+        if (params.some(v => !Number.isFinite(v))) return;
+
+        ctx.save(); ctx.setTransform(m11, m12, m21, m22, dx, dy);
+        ctx.globalAlpha = 0.6; ctx.drawImage(this._img, 0, 0, w, h); ctx.restore();
+    }
+  });
+  
+  overlayLayer = new L.AffineLayer().addTo(map);
+  const center = pixelToLatLon(currentImg.width/2, currentImg.height/2);
+  if(isValidLatLng(center)) map.setView(center, map.getZoom(), {animate:false});
+  document.getElementById('btnPreview').innerText = "🚫 关闭预览";
+}
+
+function isValidLatLng(ll) { return Array.isArray(ll) && Number.isFinite(ll[0]) && Math.abs(ll[0]) <= 90 && Number.isFinite(ll[1]) && Math.abs(ll[1]) <= 180; }
+function pixelToLatLon(x, y) {
+  if(!affineParams) return [NaN, NaN];
+  const lon = affineParams[0]*x + affineParams[2]*y + affineParams[4];
+  const lat = affineParams[1]*x + affineParams[3]*y + affineParams[5];
+  return [lat, lon];
+}
+
+function togglePickMode() {
+  isPickMode = !isPickMode;
+  const btn = document.getElementById('btnPick');
+  const left = document.getElementById('osd-viewer');
+  const right = document.getElementById('leaflet-map');
+  if(isPickMode) {
+    btn.innerHTML = "正在选点... (Esc退出)"; btn.classList.add('toggled');
+    left.classList.add('crosshair'); right.classList.add('crosshair');
+    activeGcpId = createGCP();
+  } else {
+    btn.innerHTML = "+ 添加控制点模式"; btn.classList.remove('toggled');
+    left.classList.remove('crosshair'); right.classList.remove('crosshair');
+    cleanGCPs(); activeGcpId = null;
+  }
+}
+function createGCP() { const id = gcps.length + 1; gcps.push({ id, pixel:null, geo:null, overlays:{osd:null, leaf:null} }); renderTable(); return id; }
+
+function onOSDClick(event) {
+  if (!isPickMode || !activeGcpId) return;
+  event.preventDefaultAction = true; 
+  const vp = viewer.viewport.pointFromPixel(event.position);
+  const img = viewer.world.getItemAt(0).viewportToImageCoordinates(vp);
+  const gcp = gcps.find(p => p.id === activeGcpId);
+  gcp.pixel = { x: img.x, y: img.y };
+  updateMarkers(gcp); renderTable(); checkAutoFinish(gcp);
+}
+function onLeafletClick(e) {
+  if (!isPickMode || !activeGcpId) return;
+  const gcp = gcps.find(p => p.id === activeGcpId);
+  gcp.geo = { lat: e.latlng.lat, lng: e.latlng.lng };
+  updateMarkers(gcp); renderTable(); checkAutoFinish(gcp);
+}
+function checkAutoFinish(gcp) {
+  if(gcp.pixel && gcp.geo) {
+    tryCalc();
+    setTimeout(() => { if(isPickMode) activeGcpId = createGCP(); }, 200);
+  }
+}
+
+function updateMarkers(gcp) {
+  if(gcp.pixel) {
+    if(gcp.overlays.osd) viewer.removeOverlay(gcp.overlays.osd);
+    const el = document.createElement('div'); el.className = 'pin osd-pin'; el.innerText = gcp.id;
+    viewer.addOverlay({ element:el, location:viewer.world.getItemAt(0).imageToViewportCoordinates(new OpenSeadragon.Point(gcp.pixel.x, gcp.pixel.y)) });
+    gcp.overlays.osd = el;
+  }
+  if(gcp.geo) {
+    if(gcp.overlays.leaf) map.removeLayer(gcp.overlays.leaf);
+    const icon = L.divIcon({ className:'', html:`<div class="pin">${gcp.id}</div>`, iconSize:[22,22], iconAnchor:[11,11] });
+    gcp.overlays.leaf = L.marker([gcp.geo.lat, gcp.geo.lng], {icon}).addTo(map);
+  }
+}
+function deleteGCP(idx) {
+  gcps.splice(idx, 1); viewer.clearOverlays(); map.eachLayer(l => { if(l instanceof L.Marker) map.removeLayer(l); });
+  gcps.forEach((p, i) => { p.id = i + 1; p.overlays={osd:null,leaf:null}; updateMarkers(p); });
+  if(isPickMode) {
+    const pending = gcps.find(p => !p.pixel || !p.geo);
+    activeGcpId = pending ? pending.id : createGCP();
+  } else {
+    activeGcpId = null;
+  }
+  renderTable(); tryCalc();
+}
+function cleanGCPs() {
+  const valid = gcps.filter(p => p.pixel && p.geo);
+  if(valid.length < gcps.length) {
+    gcps = valid; viewer.clearOverlays(); map.eachLayer(l => { if(l instanceof L.Marker) map.removeLayer(l); });
+    gcps.forEach((p, i) => { p.id = i+1; updateMarkers(p); });
+  }
+  renderTable();
+}
+
+/* -------------------------------------------------------------
+   高阶残差计算引擎 (高斯消元 + 最小二乘)
+------------------------------------------------------------- */
+function calcErrorRMS(points, order) {
+    const n = points.length;
+    const terms = order === 1 ? 3 : (order === 2 ? 6 : 10);
+    if (n < terms) return null;
+
+    let sumX=0, sumY=0, sumU=0, sumV=0;
+    for(let p of points) { sumX+=p.x; sumY+=p.y; sumU+=p.u; sumV+=p.v; }
+    const mX=sumX/n, mY=sumY/n, mU=sumU/n, mV=sumV/n;
+    
+    let maxP=1, maxG=1;
+    for(let p of points) {
+        maxP = Math.max(maxP, Math.abs(p.x-mX), Math.abs(p.y-mY));
+        maxG = Math.max(maxG, Math.abs(p.u-mU), Math.abs(p.v-mV));
+    }
+    if(maxP===0) maxP=1; if(maxG===0) maxG=1;
+
+    let M = [], U = [], V = [];
+    for(let p of points) {
+        let nx = (p.x - mX)/maxP, ny = (p.y - mY)/maxP;
+        let row = [1, nx, ny];
+        if(order >= 2) row.push(nx*nx, nx*ny, ny*ny);
+        if(order >= 3) row.push(nx*nx*nx, nx*nx*ny, nx*ny*ny, ny*ny*ny);
+        M.push(row);
+        U.push((p.u - mU)/maxG); V.push((p.v - mV)/maxG);
+    }
+
+    let MtM = [], MtU = [], MtV = [];
+    for(let i=0; i<terms; i++) {
+        MtM[i] = []; MtU[i]=0; MtV[i]=0;
+        for(let j=0; j<terms; j++) {
+            let sum=0; for(let k=0; k<n; k++) sum += M[k][i]*M[k][j];
+            MtM[i][j] = sum;
+        }
+        for(let k=0; k<n; k++) { MtU[i] += M[k][i]*U[k]; MtV[i] += M[k][i]*V[k]; }
+    }
+
+    let coeffU = gauss(MtM.map((r,i)=>[...r, MtU[i]]));
+    let coeffV = gauss(MtM.map((r,i)=>[...r, MtV[i]]));
+    if(!coeffU || !coeffV) return null;
+
+    let resMap = {}, sumSq = 0;
+    const ratio = maxP / maxG; 
+    for(let i=0; i<n; i++) {
+        let predU=0, predV=0;
+        for(let j=0; j<terms; j++) { predU += coeffU[j]*M[i][j]; predV += coeffV[j]*M[i][j]; }
+        let errX_px = (predU - U[i]) * maxG * ratio; 
+        let errY_px = (predV - V[i]) * maxG * ratio;
+        let res = Math.sqrt(errX_px*errX_px + errY_px*errY_px);
+        resMap[points[i].id] = res;
+        sumSq += res*res;
+    }
+    return { rms: Math.sqrt(sumSq/n), resMap };
+}
+
+function gauss(A) {
+    let n = A.length;
+    for (let i=0; i<n; i++) {
+        let maxRow=i, maxEl=Math.abs(A[i][i]);
+        for (let k=i+1; k<n; k++) if(Math.abs(A[k][i])>maxEl) { maxEl=Math.abs(A[k][i]); maxRow=k; }
+        for (let k=i; k<n+1; k++) { let tmp=A[maxRow][k]; A[maxRow][k]=A[i][k]; A[i][k]=tmp; }
+        if(Math.abs(A[i][i]) < 1e-12) return null;
+        for (let k=i+1; k<n; k++) {
+            let c = -A[k][i]/A[i][i];
+            for (let j=i; j<n+1; j++) { if(i===j) A[k][j]=0; else A[k][j]+=c*A[i][j]; }
+        }
+    }
+    let x = new Array(n).fill(0);
+    for (let i=n-1; i>=0; i--) {
+        x[i] = A[i][n]/A[i][i];
+        for (let k=i-1; k>=0; k--) A[k][n] -= A[k][i]*x[i];
+    }
+    return x;
+}
+
+function solveAffine(pts) {
+    const n = pts.length;
+    let sX=0, sY=0, sX2=0, sY2=0, sXY=0, sU=0, sV=0, sXU=0, sYU=0, sXV=0, sYV=0;
+    for(let p of pts) {
+        sX+=p.x; sY+=p.y; sX2+=p.x*p.x; sY2+=p.y*p.y; sXY+=p.x*p.y;
+        sU+=p.u; sV+=p.v; sXU+=p.x*p.u; sYU+=p.y*p.u; sXV+=p.x*p.v; sYV+=p.y*p.v;
+    }
+    const M = [[sX2, sXY, sX], [sXY, sY2, sY], [sX, sY, n]];
+    const det = M[0][0]*(M[1][1]*M[2][2] - M[2][1]*M[1][2]) - M[0][1]*(M[1][0]*M[2][2] - M[1][2]*M[2][0]) + M[0][2]*(M[1][0]*M[2][1] - M[1][1]*M[2][0]);
+    if (Math.abs(det) < 1e-12) return null; 
+    const invDet = 1.0 / det;
+    const m00 = (M[1][1]*M[2][2] - M[2][1]*M[1][2]) * invDet, m01 = (M[0][2]*M[2][1] - M[0][1]*M[2][2]) * invDet, m02 = (M[0][1]*M[1][2] - M[0][2]*M[1][1]) * invDet;
+    const m10 = (M[1][2]*M[2][0] - M[1][0]*M[2][2]) * invDet, m11 = (M[0][0]*M[2][2] - M[0][2]*M[2][0]) * invDet, m12 = (M[1][0]*M[0][2] - M[0][0]*M[1][2]) * invDet;
+    const m20 = (M[1][0]*M[2][1] - M[2][0]*M[1][1]) * invDet, m21 = (M[2][0]*M[0][1] - M[0][0]*M[2][1]) * invDet, m22 = (M[0][0]*M[1][1] - M[1][0]*M[0][1]) * invDet;
+    const A = m00*sXU + m01*sYU + m02*sU, B = m10*sXU + m11*sYU + m12*sU, C = m20*sXU + m21*sYU + m22*sU;
+    const D = m00*sXV + m01*sYV + m02*sV, E = m10*sXV + m11*sYV + m12*sV, F = m20*sXV + m21*sYV + m22*sV;
+    return [A, B, C, D, E, F];
+}
+
+function tryCalc() {
+  const valid = gcps.filter(p => p.pixel && p.geo);
+  
+  const orderSelect = document.getElementById('transformOrder');
+  orderSelect.options[1].disabled = valid.length < 6;
+  orderSelect.options[2].disabled = valid.length < 10;
+  let selectedOrder = parseInt(orderSelect.value);
+  if ((selectedOrder === 2 && valid.length < 6) || (selectedOrder === 3 && valid.length < 10)) {
+      selectedOrder = 1; orderSelect.value = 1;
+  }
+
+  if(valid.length < 3) {
+    updateStatus(`需更多点`, "#f59e0b");
+    document.getElementById('rms-display').innerText = '-';
+    document.getElementById('btnPreview').classList.add('hidden');
+    document.getElementById('btnDownTFW').disabled = true;
+    document.getElementById('btnExport').disabled = true;
+    if(overlayLayer) { map.removeLayer(overlayLayer); overlayLayer=null; }
+    renderTable(); 
+    return;
+  }
+  
+  const points = valid.map(p => ({ id: p.id, x: p.pixel.x, y: p.pixel.y, u: p.geo.lng, v: p.geo.lat }));
+  
+  const errorInfo = calcErrorRMS(points, selectedOrder);
+  if(errorInfo) {
+      document.getElementById('rms-display').innerText = errorInfo.rms.toFixed(2);
+      renderTable(errorInfo.resMap); 
+  } else {
+      document.getElementById('rms-display').innerText = '错误';
+      renderTable();
+  }
+
+  const params = solveAffine(points);
+  if(!params) { updateStatus("点位共线或无效", "#ef4444"); return; }
+  
+  affineParams = [params[0], params[3], params[1], params[4], params[2], params[5]];
+  onParamsReady(`已解算 (${selectedOrder}阶验证)`);
+}
+
+function onParamsReady(msg) {
+  updateStatus(msg, "#10b981");
+  document.getElementById('btnDownTFW').disabled = false;
+  document.getElementById('btnExport').disabled = false;
+  document.getElementById('btnPreview').classList.remove('hidden');
+}
+
+function resetAll() {
+  if (viewer) viewer.world.removeAll();
+  clearGCPs();
+  document.getElementById('btnExportTiff').classList.add('hidden');
+}
+
+function clearGCPs() {
+  if (overlayLayer) { map.removeLayer(overlayLayer); overlayLayer=null; }
+  document.getElementById('btnPreview').classList.add('hidden');
+  document.getElementById('btnDownTFW').disabled = true;
+  document.getElementById('btnExport').disabled = true;
+  gcps = []; importedData = []; affineParams = null;
+  if (viewer) viewer.clearOverlays();
+  map.eachLayer(l => { if(l instanceof L.Marker) map.removeLayer(l); });
+  renderTable();
+}
+
+function renderTable(resMap = null) {
+  const tbody = document.querySelector('#gcpTable tbody'); tbody.innerHTML = '';
+  document.getElementById('badge').innerText = gcps.length;
+  document.getElementById('emptyTip').style.display = gcps.length?'none':'block';
+  gcps.forEach((p, i) => {
+    const tr = document.createElement('tr'); if(p.id===activeGcpId) tr.classList.add('active');
+    const pix = p.pixel ? `${Math.round(p.pixel.x)}, ${Math.round(p.pixel.y)}` : '-';
+    const geo = p.geo ? `${p.geo.lng.toFixed(5)}, ${p.geo.lat.toFixed(5)}` : '-';
+    let errText = '-'; if(resMap && resMap[p.id] !== undefined) errText = resMap[p.id].toFixed(2);
+    tr.innerHTML = `<td><b>${p.id}</b></td><td><span style="font-family:monospace; font-size:12px;">${pix}</span></td><td><span style="font-family:monospace; font-size:12px;">${geo}</span></td><td style="color:#ef4444; font-family:monospace; font-weight:600;">${errText}</td><td><button class="btn secondary" onclick="deleteGCP(${i})" style="color:#ef4444; border-color:#fca5a5; padding:2px 8px; font-size:12px; height:auto;">删除</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function showLoading(show, msg, pct) {
+  document.getElementById('loadingOverlay').style.display = show ? 'flex' : 'none';
+  if(msg) document.getElementById('loadingText').innerText = msg;
+  if(typeof pct === 'number') document.getElementById('loadBar').style.width = pct + '%';
+}
+
+function downloadTFW() {
+  if(!affineParams) return;
+  const blob = new Blob([affineParams.join('\n')], {type:'text/plain'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='map.tfw'; a.click();
+}
+
+function exportGCPs() {
+  if(!gcps.length) return alert("无控制点");
+  const lines = gcps.filter(p=>p.pixel&&p.geo).map(p => 
+    `${p.pixel.x.toFixed(6)}\t${(-p.pixel.y).toFixed(6)}\t${p.geo.lng.toFixed(8)}\t${p.geo.lat.toFixed(8)}`
+  );
+  const blob = new Blob([lines.join('\n')], {type:'text/plain'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'arcgis_links.txt'; a.click();
+}
+
+function importGCPs(input) {
+  const el = input.target || input; const f = el.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = evt => {
+    const text = evt.target.result.trim(); const lines = text.split('\n');
+    clearGCPs(); let scaleX = 1; let scaleY = 1; const isComma = text.indexOf(',') !== -1; let parsedPts = [];
+    lines.forEach(line => {
+      line = line.trim(); if(!line) return; let p;
+      if (isComma) { p = line.split(',').map(Number); } else { p = line.split(/\s+/).map(Number); }
+      if(isComma && p.length >= 5 && p.slice(1, 5).every(Number.isFinite)) { parsedPts.push({ x:p[1], y:Math.abs(p[2]), lng:p[3], lat:p[4] }); } 
+      else if (!isComma && p.length >= 4 && p.slice(0, 4).every(Number.isFinite)) { parsedPts.push({ x:p[0], y:Math.abs(p[1]), lng:p[2], lat:p[3] }); }
+    });
+    if(!parsedPts.length) return alert("未识别到有效控制点，请检查 TXT/CSV 格式。");
+    const maxX = Math.max(...parsedPts.map(p=>p.x));
+    if (typeof currentImg !== 'undefined' && currentImg && maxX > 0 && maxX < currentImg.width * 0.1) {
+        const defaultRatio = (currentImg.width / maxX).toFixed(3);
+        const ratio = prompt(`检测到 ArcGIS 非像素源坐标 (最大值 ${maxX.toFixed(2)} vs 图片宽 ${currentImg.width})。\n请输入换算比例将其还原为像素：`, defaultRatio);
+        if (ratio && !isNaN(ratio)) { scaleX = parseFloat(ratio); scaleY = parseFloat(ratio); }
+    }
+    parsedPts.forEach((p, i) => {
+        const gcp = { id: i+1, pixel: { x: p.x * scaleX, y: p.y * scaleY }, geo: { lng: p.lng, lat: p.lat }, overlays: { osd:null, leaf:null } };
+        gcps.push(gcp); updateMarkers(gcp);
+    });
+    renderTable(); tryCalc();
+  };
+  r.readAsText(f); el.value = ''; 
+}
+
+async function exportGeoTIFF() {
+  if (!affineParams || !currentImg) return alert("未就绪");
+  showLoading(true, "正在生成 GeoTIFF...", 50);
+  const w = currentImg.width, h = currentImg.height; const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h; const ctx = canvas.getContext('2d');
+  try {
+      if (currentImg.type === 'bitmap') { ctx.drawImage(currentImg.bitmap, 0, 0); } 
+      else { const img = new Image(); img.src = URL.createObjectURL(currentImg.previewBlob); await new Promise(r => img.onload = r); ctx.drawImage(img, 0, 0, w, h); }
+  } catch(e) {
+      alert("警告：图片过大，将导出缩略图版本。");
+      const img = new Image(); img.src = URL.createObjectURL(currentImg.previewBlob); await new Promise(r => img.onload = r); canvas.width = img.width; canvas.height = img.height; ctx.drawImage(img, 0, 0);
+  }
+  const imgData = ctx.getImageData(0,0,canvas.width,canvas.height); const scaleX = w / canvas.width; const scaleY = h / canvas.height;
+  const m = [ affineParams[0] * scaleX, affineParams[2] * scaleY, 0, affineParams[4], affineParams[1] * scaleX, affineParams[3] * scaleY, 0, affineParams[5], 0, 0, 0, 0, 0, 0, 0, 1 ];
+  const buffer = generateTiffBuffer(imgData, m); const blob = new Blob([buffer], {type: 'image/tiff'}); const a = document.createElement('a'); 
+  a.href = URL.createObjectURL(blob); a.download = (currentImg.name.split('.')[0]) + '_georef.tif'; a.click(); showLoading(false);
+}
+
+function generateTiffBuffer(imgData, matrix) {
+    const w = imgData.width, h = imgData.height, pxSize = w * h * 3, headerSize = 8, ifdEntryCount = 13, ifdSize = 2 + (ifdEntryCount * 12) + 4; 
+    const offsetHeader = 0, offsetIFD = headerSize, offsetValues = offsetIFD + ifdSize;
+    const valSize = 6 + 128 + 48, offsetPixels = offsetValues + valSize, totalSize = offsetPixels + pxSize;
+    const buffer = new ArrayBuffer(totalSize), view = new DataView(buffer);
+    view.setUint16(0, 0x4949, true); view.setUint16(2, 42, true); view.setUint32(4, offsetIFD, true);
+    let pos = offsetIFD; view.setUint16(pos, ifdEntryCount, true); pos += 2;
+    function writeEntry(tag, type, count, valOrOffset) { view.setUint16(pos, tag, true); view.setUint16(pos+2, type, true); view.setUint32(pos+4, count, true); view.setUint32(pos+8, valOrOffset, true); pos += 12; }
+    writeEntry(256, 4, 1, w); writeEntry(257, 4, 1, h); writeEntry(258, 3, 3, offsetValues); writeEntry(259, 3, 1, 1); writeEntry(262, 3, 1, 2); writeEntry(273, 4, 1, offsetPixels); writeEntry(277, 3, 1, 3); writeEntry(278, 4, 1, h); writeEntry(279, 4, 1, pxSize); writeEntry(34264, 12, 16, offsetValues+6); writeEntry(34735, 3, 4, 0); writeEntry(33550, 12, 0, 0); writeEntry(33922, 12, 0, 0); 
+    view.setUint32(pos, 0, true); 
+    let vPos = offsetValues; view.setUint16(vPos, 8, true); vPos+=2; view.setUint16(vPos, 8, true); vPos+=2; view.setUint16(vPos, 8, true); vPos+=2;
+    for(let v of matrix) { view.setFloat64(vPos, v, true); vPos+=8; }
+    const src = imgData.data, dst = new Uint8Array(buffer, offsetPixels);
+    for(let i=0, j=0; i<src.length; i+=4, j+=3) { dst[j] = src[i]; dst[j+1] = src[i+1]; dst[j+2] = src[i+2]; } return buffer;
+}
+
+function importJSON(e) {
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=evt=>{ 
+      try {
+          const obj = JSON.parse(evt.target.result);
+          importedData = normalizeAnnotationList(obj.annotations || []); 
+          alert(`✅ 已成功导入 ${importedData.length} 个标注，将在左侧视图中显示。`); 
+      } catch(err) {
+          alert("❌ JSON解析失败，请检查文件格式。");
+      }
+  };
+  r.readAsText(f); e.target.value = '';
+}
+
+function exportGeoJSON() {
+  if(!affineParams) return alert("未配准，请先采集控制点");
+  if(affineParams.length < 6 || affineParams.some(v => !Number.isFinite(Number(v)))) return alert("配准参数无效，请重新导入 TFW 或采集控制点。");
+  if(!importedData || importedData.length === 0) return alert("无标注数据，请先导入 JSON");
+  const feats = importedData.map((d, index) => {
+    const ann = normalizeAnnotationRecord(d, index);
+    if(!ann) return null;
+    const ll = pixelToLatLon(ann.anchor.x, ann.anchor.y);
+    if(!Number.isFinite(ll[0]) || !Number.isFinite(ll[1])) return null;
+    return { type:"Feature", geometry:{type:"Point",coordinates:[ll[1], ll[0]]}, properties:{id:ann.id, name:ann.text, mapId:ann.mapId || null} };
+  }).filter(Boolean);
+  if(!feats.length) return alert("没有可导出的有效标注点。");
+  const blob = new Blob([JSON.stringify({type:"FeatureCollection",features:feats})], {type:'application/json'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='map_annotations.geojson'; a.click();
+}
+
+function updateStatus(msg, color) {
+  const el = document.getElementById('status'); el.innerText = msg; el.style.color = color;
+}
+
+function togglePanel() {
+  const panel = document.getElementById('control-panel');
+  panel.classList.toggle('collapsed');
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

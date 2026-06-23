@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GeoSpatial Workspace</title>
+<style>
+  /* --- 动态环境与液体玻璃变量 --- */
+  :root {
+    --light-x: 50%;
+    --light-y: -10%;
+    --shadow-dx: 0px;
+    --shadow-dy: 30px;
+    --shadow-dist: 40px;
+
+    --env-color: 240, 248, 255;      
+    --bg-bottom: 253, 253, 253;      
+    --text-rgb: 44, 62, 80;          
+    --night-alpha: 0;                
+    --orb-scale: 1;                  
+    --shadow-alpha: 0.04;            
+    --weather-dim: 0; /* 天气带来的环境压暗系数 */
+
+    --bg-tint: rgba(var(--env-color), 0.35);
+    --text-primary: rgb(var(--text-rgb));
+    --text-secondary: rgba(var(--text-rgb), 0.75);
+
+    --blob-1: rgba(186, 225, 255, 0.5); 
+    --blob-2: rgba(255, 223, 186, 0.4); 
+    --blob-3: rgba(201, 250, 223, 0.4); 
+
+    --card-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.02) 100%);
+    --card-border: rgba(255, 255, 255, 0.35);
+    --highlight-color: rgba(255, 255, 255, 0.8);
+    --accent-blue: #3b82f6;
+  }
+  
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(to bottom, var(--bg-tint), rgb(var(--bg-bottom)));
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; 
+    justify-content: flex-start; padding-top: 12vh;
+    overflow-x: hidden; 
+    position: relative; -webkit-font-smoothing: antialiased; 
+  }
+
+  /* --- 优雅的悬浮态定制滚动条 --- */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.3); border-radius: 999px;
+    border: 2px solid transparent; background-clip: padding-box; transition: background 0.3s;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.6); border: 2px solid transparent; background-clip: padding-box; }
+
+  /* --- 沉浸式环境光与天气系统 --- */
+  .ambient-background {
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: -1; overflow: hidden; pointer-events: none;
+  }
+
+  .blob {
+    position: absolute; filter: blur(100px);
+    animation: float 25s infinite alternate ease-in-out, morph 20s infinite alternate ease-in-out;
+  }
+  .blob-1 { width: 50vw; height: 50vw; background: var(--blob-1); top: -15%; left: -10%; }
+  .blob-2 { width: 45vw; height: 45vw; background: var(--blob-2); bottom: -10%; right: -5%; animation-delay: -5s; animation-duration: 25s, 18s; }
+  .blob-3 { width: 40vw; height: 40vw; background: var(--blob-3); top: 25%; left: 45%; animation-delay: -10s; animation-duration: 22s, 20s; }
+  
+  @keyframes float {
+    0% { transform: translate(0, 0) rotate(0deg); }
+    33% { transform: translate(6vw, -5vh) rotate(10deg); }
+    66% { transform: translate(-4vw, 6vh) rotate(-5deg); }
+    100% { transform: translate(2vw, 2vh) rotate(5deg); }
+  }
+  @keyframes morph {
+    0% { border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; }
+    34% { border-radius: 70% 30% 50% 50% / 30% 30% 70% 70%; }
+    67% { border-radius: 100% 60% 60% 100% / 100% 100% 60% 60%; }
+    100% { border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; }
+  }
+
+  .stars {
+    position: absolute; inset: 0; z-index: 1;
+    background-image: radial-gradient(1.5px 1.5px at 10% 20%, rgba(255,255,255,0.8) 100%, transparent), radial-gradient(1px 1px at 30% 50%, rgba(255,255,255,0.6) 100%, transparent), radial-gradient(2px 2px at 70% 10%, rgba(255,255,255,0.9) 100%, transparent), radial-gradient(1.5px 1.5px at 40% 80%, rgba(255,255,255,0.7) 100%, transparent), radial-gradient(1px 1px at 85% 65%, rgba(255,255,255,0.5) 100%, transparent);
+    background-size: 180px 180px; background-repeat: repeat;
+    opacity: calc(var(--night-alpha) * 1.5);
+  }
+
+  /* 夜幕与天气压暗遮罩 (混合叠加) */
+  .ambient-overlay {
+    position: absolute; inset: 0; z-index: 2;
+    /* 结合了夜间遮罩与阴雨天遮罩 */
+    background: rgba(8, 12, 28, calc(var(--night-alpha) + var(--weather-dim)));
+    mix-blend-mode: normal; transition: background 1.5s ease;
+  }
+
+  .celestial-orb {
+    position: absolute; z-index: 3; width: 60vw; height: 60vw; min-width: 800px; min-height: 800px;
+    border-radius: 50%; left: var(--light-x); top: var(--light-y);
+    transform: translate(-50%, -50%) scale(var(--orb-scale));
+    background: radial-gradient(circle at center, rgb(var(--env-color)) 0%, transparent 60%);
+    filter: blur(60px); opacity: 0.9;
+  }
+
+  /* 物理大雾层 */
+  .fog-layer {
+    position: absolute; inset: 0; z-index: 4; pointer-events: none;
+    background: rgba(255, 255, 255, 0); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(0px);
+    transition: all 2s ease;
+  }
+  body[data-weather="fog"] .fog-layer {
+    background: rgba(255, 255, 255, calc(0.3 - var(--night-alpha) * 0.2)); 
+    backdrop-filter: blur(25px) saturate(80%); -webkit-backdrop-filter: blur(25px) saturate(80%);
+  }
+
+  /* Canvas 气象引擎图层 (光尘、雨滴) */
+  /* 替换原有的 .weather-canvas */
+  .weather-canvas {
+    position: fixed; inset: 0; 
+    z-index: 5; /* 关键修改：放置在 UI(10) 之下，背景(1-4) 之上 */
+    pointer-events: none; opacity: 1; transition: opacity 1s ease;
+  }
+
+  /* --- 页面主体结构 --- */
+  .container { max-width: 1200px; width: 100%; padding: 0 2rem 6rem 2rem; display: flex; flex-direction: column; align-items: center; z-index: 10; }
+
+  @keyframes liquidReveal { 0% { opacity: 0; transform: translateY(40px) scale(0.96); filter: blur(20px); } 100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); } }
+
+  header { text-align: center; margin-bottom: 5rem; }
+  
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px;
+    background: rgba(255, 255, 255, calc(0.3 - var(--night-alpha) * 0.25)); color: var(--text-secondary);
+    border-radius: 999px; font-size: 0.85rem; font-weight: 500; letter-spacing: 0.05em; margin-bottom: 1.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02), inset 0 1px 1px rgba(255,255,255,0.5); border: 1px solid rgba(255,255,255,0.3);
+    animation: liquidReveal 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; backdrop-filter: blur(15px);
+  }
+
+  #timeDisplay { font-family: ui-monospace, SFMono-Regular, monospace; font-weight: 600; color: rgb(var(--env-color)); filter: brightness(0.85); }
+
+  h1 {
+    font-size: clamp(3rem, 6vw, 4.5rem); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; margin-bottom: 1rem;
+    background: linear-gradient(to right, var(--text-primary) 30%, rgba(var(--text-rgb), 0.4) 50%, var(--text-primary) 70%);
+    background-size: 200% auto; color: transparent; background-clip: text; -webkit-background-clip: text;
+    animation: liquidReveal 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.15s forwards, softShine 10s linear infinite 2s; opacity: 0;
+  }
+  @keyframes softShine { to { background-position: 200% center; } }
+
+  p.subtitle {
+    font-size: clamp(1.2rem, 2vw, 1.4rem); color: var(--text-secondary); font-weight: 400; max-width: 600px; margin: 0 auto; line-height: 1.5;
+    opacity: 0; animation: liquidReveal 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.3s forwards;
+  }
+
+  /* --- 3D 物理响应液体卡片 --- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 3.5rem; width: 100%; max-width: 900px; perspective: 1400px; }
+  .card-wrapper { opacity: 0; transform-style: preserve-3d; animation: liquidReveal 1.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  .card-wrapper:nth-child(1) { animation-delay: 0.45s; }
+  .card-wrapper:nth-child(2) { animation-delay: 0.6s; }
+
+/* --- 3D 物理响应液体卡片 (光学优化版) --- */
+  .card {
+    display: block; text-decoration: none; 
+    /* 稍微降低背景白色的不透明度，让背后的光更容易透射进来 */
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.02) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.25); 
+    border-radius: 36px; padding: 3rem 2.5rem; height: 100%; position: relative; overflow: hidden;
+    
+    /* 核心透射光学：降低 blur 让极光形态微露，提高 saturate 让透射光更绚丽 */
+    backdrop-filter: blur(35px) saturate(180%); 
+    -webkit-backdrop-filter: blur(35px) saturate(180%);
+    
+    /* 边缘高光系统：增加顶部的高光切边和底部的微弱反光 */
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) var(--shadow-dist) rgba(0,0,0,var(--shadow-alpha)), 
+      inset 0 1.5px 1px rgba(255, 255, 255, 0.45),   /* 顶部锐利高光 */
+      inset 0 -1px 2px rgba(255, 255, 255, 0.1),    /* 底部微弱折射 */
+      0 0 20px rgba(255, 255, 255, 0.03);           /* 整体环境光晕 */
+      
+    transition: box-shadow 0.4s ease, border-color 0.4s ease, background 0.4s ease;
+  }
+
+  .card:hover {
+    /* 悬浮时，玻璃变薄（增加透明度），引入更多光线 */
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.05) 100%);
+    border-color: rgba(255, 255, 255, 0.6);
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,0,0,calc(var(--shadow-alpha) * 1.5)), 
+      inset 0 1.5px 2px rgba(255, 255, 255, 0.8),   /* 悬浮时强化顶部高光 */
+      0 0 30px rgba(255, 255, 255, 0.1);            /* 悬浮时发散环境光 */
+  }
+
+  .card::before {
+    content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: radial-gradient(800px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(255,255,255,0.4), transparent 50%);
+    opacity: 0; transition: opacity 0.5s ease; pointer-events: none; z-index: 1; mix-blend-mode: overlay;
+  }
+
+  .card:hover::before { opacity: 1; }
+  .card-content { position: relative; z-index: 2; display: flex; flex-direction: column; height: 100%; transform: translateZ(30px); }
+
+  .icon-wrapper {
+    width: 60px; height: 60px; border-radius: 20px; background: linear-gradient(135deg, rgba(255,255,255,0.6), rgba(255,255,255,0.2));
+    backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.7);
+    display: flex; align-items: center; justify-content: center; margin-bottom: 2rem;
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.02), inset 0 2px 5px rgba(255,255,255,0.8); color: var(--text-secondary);
+  }
+  .icon-wrapper svg { width: 30px; height: 30px; stroke-width: 1.5; }
+  .card-wrapper:nth-child(1) .icon-wrapper { color: #5390f7; }
+  .card-wrapper:nth-child(2) .icon-wrapper { color: #9f75f7; }
+
+  .card h2 { font-size: 1.8rem; font-weight: 600; margin-bottom: 0.8rem; letter-spacing: -0.01em; color: var(--text-primary); }
+  .card p { font-size: 1.05rem; line-height: 1.6; flex-grow: 1; color: var(--text-secondary); }
+  .card-action { margin-top: 2.5rem; display: flex; align-items: center; color: var(--text-primary); font-weight: 500; font-size: 1.05rem; gap: 0.4rem; opacity: 0.8; }
+  .card-action svg { width: 18px; height: 18px; transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+  .card:hover .card-action { opacity: 1; }
+  .card:hover .card-action svg { transform: translateX(6px); }
+  
+  /* --- 定制化控制台面板 --- */
+  .control-panel {
+    position: fixed; bottom: 20px; right: 20px;
+    background: rgba(255,255,255,0.25); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.4); padding: 8px 14px 8px 18px; border-radius: 999px;
+    font-size: 12px; color: var(--text-secondary); font-weight: 500;
+    display: flex; align-items: center; gap: 12px; z-index: 100;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.05), inset 0 1px 1px rgba(255,255,255,0.6);
+  }
+
+  .control-panel input[type="range"] {
+    -webkit-appearance: none; appearance: none; height: 6px; border-radius: 99px; outline: none; cursor: pointer;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.15); background: rgba(255, 255, 255, 0.2); transition: background 0.1s linear;
+  }
+  .control-panel input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15), 0 0 0 1.5px rgba(255,255,255,0.6) inset; transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .control-panel input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
+
+  .reset-time-btn {
+    width: 24px; height: 24px; border-radius: 50%; background: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.6);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary);
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); opacity: 0; transform: scale(0.8); pointer-events: none; margin-left: -6px;
+  }
+  .reset-time-btn svg { width: 12px; height: 12px; }
+  .reset-time-btn:hover { background: rgba(255,255,255,0.9); color: var(--accent-blue); }
+  .control-panel.is-manual .reset-time-btn { opacity: 1; transform: scale(1); pointer-events: auto; margin-left: 0; }
+
+/* --- 优雅的天气切换按钮 --- */
+  .switch-weather-btn {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.5);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; color: var(--text-secondary);
+    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .switch-weather-btn svg { width: 13px; height: 13px; }
+  .switch-weather-btn:hover {
+    background: rgba(255,255,255,0.85); color: var(--accent-blue);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+
+  /* --- 页面丝滑跳转过渡动画 --- */
+  body.page-transitioning { pointer-events: none; }
+  body.page-transitioning header, body.page-transitioning .control-panel, body.page-transitioning .card-wrapper:not(.selected) { opacity: 0 !important; transform: translateY(30px) scale(0.9) !important; filter: blur(15px) !important; transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1) !important; }
+  body.page-transitioning .card-wrapper.selected .card { transform: perspective(1200px) translateZ(100px) scale(1.08) !important; box-shadow: 0 40px 100px rgba(0,0,0,0.1), inset 0 2px 20px rgba(255,255,255,1) !important; border-color: rgba(255,255,255,1) !important; background: rgba(255,255,255,0.4) !important; opacity: 0 !important; filter: blur(10px) !important; transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s ease 0.2s, filter 0.4s ease 0.2s, background 0.4s ease !important; }
+  body.page-transitioning .ambient-background { transform: scale(1.08); filter: blur(30px) brightness(1.15); transition: all 0.6s ease-in-out; }
+
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; gap: 2rem; } .card { padding: 2rem 1.5rem; } .celestial-orb { width: 120vw; height: 120vw; } }
+
+/* --- 冰雹雷电天气的特殊光影系统 --- */
+  :root {
+    --flash-v: 0; /* 闪电亮度变量，由 JS 实时驱动 */
+  }
+  
+  /* 冰雹天气下，平时极度压暗 UI (亮度0.15)，闪电时瞬间拉高亮度并增强对比度 */
+  body[data-weather="hail"] .container,
+  body[data-weather="hail"] .control-panel {
+    filter: brightness(calc(0.15 + var(--flash-v) * 1.8)) contrast(calc(1 + var(--flash-v) * 0.4));
+    transition: filter 0.05s ease-out; /* 极速响应闪电的爆闪 */
+  }
+  
+  /* 冰雹天气下的大气层遮罩配合闪电消除压暗 */
+  body[data-weather="hail"] .ambient-overlay {
+    background: rgba(8, 12, 28, calc(var(--night-alpha) + 0.88 - var(--flash-v) * 0.88)) !important;
+  }
+
+/* 冰雹雷暴天气下，厚重云层彻底遮蔽天体 (太阳/月亮) */
+  body[data-weather="hail"] .celestial-orb {
+    opacity: 0.1 !important; 
+    filter: blur(100px) brightness(0.2) !important;
+    transition: opacity 2s ease, filter 2s ease; 
+  }
+
+/* --- 诡异奇观：日/月食与磁场异常系统 --- */
+  body[data-weather="eclipse"] {
+    /* 强制全局环境光红移，带来极强的心理压迫感 */
+    --env-color: 220, 20, 60 !important; 
+    --bg-bottom: 20, 0, 0 !important;
+  }
+  
+  body[data-weather="eclipse"] .ambient-overlay {
+    background: rgba(40, 5, 10, calc(var(--night-alpha) + 0.65)) !important;
+    mix-blend-mode: multiply; /* 加深压暗效果 */
+  }
+
+  /* 太阳/月亮异变为血色空心光环 */
+  body[data-weather="eclipse"] .celestial-orb {
+    background: transparent !important;
+    box-shadow: inset 0 0 50px rgba(255, 0, 0, 0.8), 0 0 100px rgba(220, 20, 60, 0.9) !important;
+    border: 3px solid rgba(255, 80, 80, 0.9);
+    filter: blur(6px) contrast(1.5);
+    /* 诡异的心跳呼吸感 */
+    animation: bloodMoonPulse 4s infinite alternate ease-in-out;
+    transition: left 0.2s ease-out, top 0.2s ease-out; /* 配合JS实现“凝视”跟随 */
+  }
+
+/* 修复：移除日夜的时间缩放差异，将日环与月环强制统一大小，并缩小至约原来月环的二分之一 */
+  @keyframes bloodMoonPulse {
+    0% { 
+      /* 强制将 scale 锁定在 0.26，不再受白天放大、夜晚缩小的时间变量影响 */
+      transform: translate(-50%, -50%) scale(0.26); 
+      opacity: 0.8; 
+      /* 因为本体缩小了，这里稍微加厚了 inset 内阴影，保证光环依然显得浓郁饱满 */
+      box-shadow: inset 0 0 60px rgba(255, 0, 0, 0.6), 0 0 100px rgba(220, 20, 60, 0.6); 
+    }
+    100% { 
+      /* 呼吸放大到 0.30 */
+      transform: translate(-50%, -50%) scale(0.30); 
+      opacity: 1; 
+      box-shadow: inset 0 0 120px rgba(255, 0, 0, 1), 0 0 200px rgba(255, 30, 30, 1); 
+    }
+  }
+
+  /* 玻璃控件在此天气下反射出血色微光 */
+  body[data-weather="eclipse"] .card {
+    box-shadow: var(--shadow-dx) var(--shadow-dy) var(--shadow-dist) rgba(80, 0, 0, 0.3), inset 0 1.5px 1px rgba(255, 100, 100, 0.3), inset 0 -1px 2px rgba(255, 0, 0, 0.2), 0 0 25px rgba(220, 20, 60, 0.08) !important;
+    border-color: rgba(255, 100, 100, 0.3) !important;
+  }
+
+/* --- 极光天气下的玻璃卡片边缘反射光系统 --- */
+  body[data-weather="aurora"] .card {
+    /* 基础边框染上淡淡的紫罗兰色 */
+    border-color: rgba(180, 100, 255, 0.3) !important;
+    
+    /* 利用多重方向的内外阴影，混合出红、蓝、紫交织的物理反射边缘 */
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) var(--shadow-dist) rgba(0,0,0,calc(var(--shadow-alpha) * 1.5)), 
+      inset 2px 2px 4px rgba(255, 60, 100, 0.25),   /* 左上边缘：红色高光反射 */
+      inset -2px -2px 4px rgba(0, 200, 255, 0.25),  /* 右下边缘：蓝色高光反射 */
+      inset 0 0 15px rgba(180, 60, 255, 0.15),      /* 卡片内部：紫色漫反射漫溢 */
+      0 0 30px rgba(160, 80, 255, 0.12) !important; /* 卡片外部：微弱的紫蓝色环境光晕 */
+      
+    transition: box-shadow 0.8s ease, border-color 0.8s ease;
+  }
+
+  /* 悬浮交互：极光辉光随玻璃“变薄”而剧烈增强 */
+  body[data-weather="aurora"] .card:hover {
+    border-color: rgba(200, 150, 255, 0.6) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,0,0,calc(var(--shadow-alpha) * 2)), 
+      inset 3px 3px 6px rgba(255, 60, 100, 0.45),   
+      inset -3px -3px 6px rgba(0, 200, 255, 0.45),  
+      inset 0 0 25px rgba(180, 60, 255, 0.3),      
+      0 0 45px rgba(180, 100, 255, 0.25) !important;
+  }
+  
+  /* 让控制台在极光下也沾染一点边缘光，保持全局统一 */
+  body[data-weather="aurora"] .control-panel {
+    border-color: rgba(180, 100, 255, 0.25) !important;
+    box-shadow: 
+      0 8px 25px rgba(0,0,0,0.05), 
+      inset 1px 1px 2px rgba(255, 60, 100, 0.2),
+      inset -1px -1px 2px rgba(0, 200, 255, 0.2) !important;
+  }
+
+/* =========================================
+     全气象定制化玻璃边缘反射系统
+     ========================================= */
+
+  /* --- 1. 雪天 (Snow)：霜冻结晶质感 --- */
+  body[data-weather="snow"] .card {
+    border-color: rgba(220, 240, 255, 0.4) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) var(--shadow-dist) rgba(0,0,0,var(--shadow-alpha)), 
+      inset 0 2px 3px rgba(255, 255, 255, 0.8),    /* 顶部锐利的白雪高光 */
+      inset 0 -1px 2px rgba(180, 220, 255, 0.25),   /* 底部的极地冷蓝折射 */
+      0 0 15px rgba(200, 230, 255, 0.1) !important;
+  }
+  body[data-weather="snow"] .card:hover {
+    border-color: rgba(255, 255, 255, 0.8) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,0,0,calc(var(--shadow-alpha) * 1.5)), 
+      inset 0 3px 6px rgba(255, 255, 255, 0.95), 
+      0 0 25px rgba(220, 240, 255, 0.25) !important;
+  }
+
+  /* --- 2. 雾天 (Fog)：柔和漫反射水汽质感 --- */
+  body[data-weather="fog"] .card {
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    /* 雾天水汽附着，降低透光率，增加模糊和乳白色 */
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.1) 100%) !important;
+    backdrop-filter: blur(50px) saturate(90%) !important; 
+    -webkit-backdrop-filter: blur(50px) saturate(90%) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) var(--shadow-dist) rgba(0,0,0,calc(var(--shadow-alpha) * 0.6)), 
+      inset 0 0 25px rgba(255, 255, 255, 0.15),     /* 内部大范围柔和泛白 */
+      inset 0 1px 1px rgba(255, 255, 255, 0.2) !important; /* 边缘极弱的光斑 */
+  }
+  body[data-weather="fog"] .card:hover {
+    border-color: rgba(255, 255, 255, 0.35) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,0,0,var(--shadow-alpha)), 
+      inset 0 0 40px rgba(255, 255, 255, 0.2), 
+      inset 0 1px 2px rgba(255, 255, 255, 0.4) !important;
+  }
+
+  /* --- 3. 雷暴冰雹 (Hail)：电弧切割与闪电联动反射 --- */
+  body[data-weather="hail"] .card {
+    /* 边框和内阴影的透明度直接绑定 --flash-v 变量，实现伴随闪电的爆闪边缘光 */
+    border-color: rgba(180, 220, 255, calc(0.1 + var(--flash-v) * 0.7)) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) var(--shadow-dist) rgba(0,5,20,0.5), 
+      inset 1.5px 1.5px 3px rgba(220, 240, 255, calc(0.1 + var(--flash-v) * 0.9)),   /* 闪电劈下时的冷白高光 */
+      inset -1px -1px 3px rgba(100, 150, 255, calc(0.05 + var(--flash-v) * 0.5)),  /* 闪电暗部的幽蓝反射 */
+      0 0 calc(10px + var(--flash-v) * 40px) rgba(180, 220, 255, calc(var(--flash-v) * 0.35)) !important;
+  }
+  body[data-weather="hail"] .card:hover {
+    border-color: rgba(200, 230, 255, calc(0.25 + var(--flash-v) * 0.75)) !important;
+    box-shadow: 
+      var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,5,20,0.6), 
+      inset 2px 2px 5px rgba(240, 250, 255, calc(0.2 + var(--flash-v) * 1)), 
+      0 0 calc(20px + var(--flash-v) * 60px) rgba(200, 230, 255, calc(var(--flash-v) * 0.45)) !important;
+  }
+
+/* =========================================
+     工具介绍区块专属排版样式
+     ========================================= */
+.intro-section {
+    width: 100%;
+    max-width: 1080px; /* 【修改】：从 900px 加宽到 1080px，让图文排版更舒展 */
+    margin-top: 25vh; /* 【修改】：从 5rem 改为 25vh (视口高度的25%)，增加极大的间距，确保首屏绝对干净 */
+    opacity: 0;
+    transform-style: preserve-3d;
+    animation: liquidReveal 1.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: 0.8s; 
+  }
+
+  .intro-card {
+    /* 增加内边距，适应长文阅读 */
+    padding: 3.5rem 4rem;
+    cursor: default; 
+    transition: box-shadow 0.4s ease, border-color 0.4s ease, background 0.4s ease;
+  }
+
+  /* 覆盖 js 带来的 3D 旋转，保障长文阅读稳定性，但保留玻璃反光和天气边缘特效 */
+  .intro-card:hover {
+    transform: none !important; 
+    box-shadow: var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,0,0,calc(var(--shadow-alpha) * 1.2)), 
+                inset 0 1.5px 2px rgba(255, 255, 255, 0.6), 
+                0 0 30px rgba(255, 255, 255, 0.05);
+  }
+
+  .intro-title {
+    font-size: 2.2rem;
+    font-weight: 600;
+    margin-bottom: 2.5rem;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    text-align: center;
+  }
+
+  .intro-content p {
+    font-size: 1.08rem;
+    line-height: 1.85;
+    color: var(--text-secondary);
+    margin-bottom: 1.2rem;
+    text-align: justify;
+  }
+
+  .intro-content ul {
+    margin: 1.8rem 0 1.8rem 2.5rem;
+    color: var(--text-secondary);
+    font-size: 1.08rem;
+    line-height: 1.85;
+  }
+
+  .intro-content li {
+    margin-bottom: 1rem;
+  }
+
+  .intro-content strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+.intro-image-wrapper {
+    margin-top: 4rem; 
+    width: 100%;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow: 0 15px 35px rgba(0,0,0,0.1), inset 0 2px 5px rgba(255,255,255,0.6);
+    position: relative;
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  .intro-image {
+    width: 100%;
+    display: block;
+    height: auto;
+    transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* 鼠标悬停在图片上时轻微呼吸放大 */
+  .intro-image-wrapper:hover .intro-image {
+    transform: scale(1.02);
+  }
+
+  /* 移动端适配 */
+  @media (max-width: 768px) {
+    .intro-card {
+      padding: 2.5rem 1.5rem;
+    }
+    .intro-title {
+      font-size: 1.8rem;
+      margin-bottom: 1.5rem;
+    }
+    .intro-content ul {
+      margin-left: 1.2rem;
+    }
+  }
+
+/* =========================================
+     地图标注工具特性展示（交替瀑布流）
+     ========================================= */
+  .feature-section {
+    width: 100%;
+    max-width: 1080px;
+    margin-top: 8rem; /* 与上方的总体介绍拉开距离 */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    opacity: 0;
+    /* 延后浮现动画 */
+    animation: liquidReveal 1.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: 1s; 
+  }
+
+  .feature-section-title {
+    font-size: 2.2rem;
+    font-weight: 600;
+    margin-bottom: 4.5rem;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    text-align: center;
+  }
+
+  /* 每一行的基础布局：弹性盒子，垂直居中对齐 */
+  .feature-row {
+    display: flex;
+    align-items: center;
+    gap: 4rem;
+    margin-bottom: 5.5rem;
+    width: 100%;
+  }
+
+  /* 交替反转方向：实现图右文左 */
+  .feature-row.reverse {
+    flex-direction: row-reverse;
+  }
+
+  /* 图片容器的物理质感 */
+  .feature-img-wrapper {
+    flex: 1.25; /* 让图片在横向比例中略微大一点 */
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow: 0 15px 35px rgba(0,0,0,0.1), inset 0 2px 5px rgba(255,255,255,0.6);
+    background: rgba(255, 255, 255, 0.2);
+    transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.5s ease;
+  }
+
+  /* 鼠标悬停图片轻微上浮发光 */
+  .feature-img-wrapper:hover {
+    transform: translateY(-8px);
+    box-shadow: 0 25px 45px rgba(0,0,0,0.15), inset 0 2px 5px rgba(255,255,255,0.8);
+  }
+
+  .feature-img-wrapper img {
+    width: 100%;
+    display: block;
+    height: auto;
+  }
+
+  /* 文字解说容器：复用了玻璃 .card，但去除了 3D 旋转干扰 */
+  .feature-text {
+    flex: 1;
+    padding: 2.8rem 2.5rem;
+    cursor: default;
+    transform: none !important; 
+  }
+
+  .feature-text:hover {
+    transform: none !important;
+    box-shadow: var(--shadow-dx) var(--shadow-dy) calc(var(--shadow-dist) * 1.5) rgba(0,0,0,calc(var(--shadow-alpha) * 1.2)), 
+                inset 0 1.5px 2px rgba(255, 255, 255, 0.6), 
+                0 0 30px rgba(255, 255, 255, 0.05);
+  }
+
+  .feature-text h3 {
+    font-size: 1.45rem;
+    font-weight: 600;
+    margin-bottom: 1.2rem;
+    color: var(--text-primary);
+  }
+
+  .feature-text p {
+    font-size: 1.05rem;
+    line-height: 1.8;
+    color: var(--text-secondary);
+    text-align: justify;
+  }
+
+/* =========================================
+     全局移动端与平板适配 (响应式断点)
+     ========================================= */
+  @media (max-width: 768px) {
+    /* 1. 全局容器与头部微调 */
+    .container { 
+      padding: 0 1.2rem 6rem 1.2rem; 
+      padding-top: 8vh; 
+    }
+    h1 { font-size: 2.2rem; }
+    p.subtitle { font-size: 1rem; }
+
+    /* 2. 顶部工具入口卡片 */
+    .grid { 
+      grid-template-columns: 1fr; 
+      gap: 1.5rem; 
+    }
+    .card { padding: 1.8rem 1.5rem; }
+    .card h2 { font-size: 1.5rem; }
+    .card p { font-size: 0.95rem; }
+
+    /* 3. 工具介绍区块 (工作流长文) */
+    .intro-section { 
+      margin-top: 15vh; /* 手机端视口较短，缩小下划出现的间距 */
+    } 
+    .intro-card { 
+      padding: 2rem 1.2rem; 
+    }
+    .intro-title { 
+      font-size: 1.8rem; 
+      margin-bottom: 1.5rem; 
+    }
+    .intro-content p, .intro-content ul { 
+      font-size: 1rem; 
+      line-height: 1.7; 
+      text-align: left; /* 手机端两端对齐容易导致字间距异常，改回左对齐 */
+    }
+    .intro-content ul { margin-left: 1.5rem; }
+    .intro-image-wrapper { margin-top: 2.5rem; }
+
+    /* 4. 瀑布流图文介绍区块 */
+    .feature-section { margin-top: 5rem; }
+    .feature-section-title { 
+      font-size: 1.8rem; 
+      margin-bottom: 3rem; 
+    }
+    /* 强制解除水平排列，改为垂直堆叠 */
+    .feature-row, .feature-row.reverse { 
+      flex-direction: column; 
+      gap: 1.5rem; 
+      margin-bottom: 4rem; 
+    }
+    .feature-img-wrapper, .feature-text { width: 100%; }
+    .feature-text { padding: 1.8rem 1.2rem; }
+    .feature-text h3 { font-size: 1.35rem; }
+    .feature-text p { font-size: 0.95rem; line-height: 1.7; text-align: left; }
+
+    /* 5. 底部气象/时间控制台 (居中优化) */
+    .control-panel { 
+      /* 手机端将其居中显示，避免被全面屏手势条遮挡或靠边太挤 */
+      right: 50%;
+      transform: translateX(50%);
+      bottom: 20px;
+      padding: 6px 14px;
+      font-size: 11px;
+      gap: 8px;
+      width: max-content;
+      max-width: 90vw;
+    }
+    .control-panel input[type="range"] { 
+      width: 70px !important; /* 缩短滑块长度 */
+    }
+    .switch-weather-btn {
+      width: 22px; height: 22px;
+    }
+
+    /* 6. 天体尺寸微调 */
+    .celestial-orb { 
+      width: 150vw; 
+      height: 150vw; 
+      min-width: 600px; 
+      min-height: 600px; 
+    }
+  }
+
+</style>
+</head>
+<body data-weather="clear">
+
+  <div class="ambient-background">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+    <div class="stars"></div>
+    <div class="ambient-overlay"></div>
+    <div class="celestial-orb" id="celestialOrb"></div>
+    <div class="fog-layer"></div>
+  </div>
+
+  <canvas id="weatherCanvas" class="weather-canvas"></canvas>
+
+  <main class="container">
+    <header>
+      <div class="badge">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="16" height="16">
+          <circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span id="timeDisplay">计算中...</span> · Spatial Humanities
+      </div>
+      <h1>历史地图数字化工具集</h1>
+      <p class="subtitle">为历史地图研究打造的简易数字化工具集</p>
+    </header>
+
+    <div class="grid">
+      <div class="card-wrapper">
+        <a href="./historical_map_annotator_compact_page.html" class="card">
+          <div class="card-content">
+            <div class="icon-wrapper">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"></path>
+                <circle cx="12" cy="10" r="3"></circle>
+              </svg>
+            </div>
+            <h2>历史地图标注</h2>
+            <p>基于混合金字塔渲染技术的在线标注平台。支持地图标注查询、云端共享与跨图检索，呈现历史地图的每一处细节。</p>
+            <div class="card-action">
+              进入系统 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            </div>
+          </div>
+        </a>
+      </div>
+
+      <div class="card-wrapper">
+        <a href="./Georeferencing_page.html" class="card">
+          <div class="card-content">
+            <div class="icon-wrapper">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"></polygon>
+                <line x1="9" y1="3" x2="9" y2="18"></line>
+                <line x1="15" y1="6" x2="15" y2="21"></line>
+              </svg>
+            </div>
+            <h2>在线地理配准</h2>
+            <p>无需安装笨重的桌面端软件，在浏览器内即可完成空间坐标系转换、控制点选取与历史地图的数字化纠正工作。</p>
+            <div class="card-action">
+              进入系统 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            </div>
+          </div>
+        </a>
+      </div>
+    </div>
+
+<div class="intro-section">
+      <div class="card intro-card">
+        <h2 class="intro-title">工具介绍</h2>
+        <div class="intro-content">
+          <p>在传统的历史地理研究中，我们常常面临一个棘手的痛点：历史地图和早期卫星图中蕴藏着极具价值的地名与地理标注，但由于它们仅仅是静态图像，想要在海量图库中寻找某个特定的历史节点，往往只能在一张张地图中肉眼检索，费时费力。</p>
+          <p>另一方面，如果我们想让这些古旧地图重获空间属性，与现代地图进行位置匹配，传统做法必须依赖庞大且复杂的桌面端 GIS 软件。繁琐的安装和学习过程，对初学者或跨领域的文史研究者来说极不友好。</p>
+          <p>基于此，我们设计了这套轻量级的在线工具集，旨在为你提供一条从“简单易用”到“专业处理”的无缝互通工作流：</p>
+          
+          <ul>
+            <li><strong>地图标注工具：</strong> 将地图中沉睡的文字提取出来。支持在超大分辨率的历史原图上直接进行文本标注，将不可读的图像像素转化为支持全局模糊检索的结构化数据，让文献查找告别“海里捞针”。</li>
+            <li><strong>在线配准工具：</strong> 彻底打破软件壁垒。在浏览器内即可快速完成历史地图与现代底图的坐标对齐。生成的参数与影像（TFW / GeoTIFF）完全兼容专业 GIS 软件。</li>
+          </ul>
+          
+          <p>这两个工具不仅可以独立工作，更能够相互赋能。当你在配准工具中完成地图的位置校准后，可以直接导入标注工具生成的 JSON 标注文件。系统底层会利用仿射变换矩阵，将原先基于图片像素定位的标注，一键转换为带有标准经纬度坐标的 GeoJSON 地理空间数据。这意味着，你在网页上轻松完成的每一次打点，都能彻底融入标准的 GIS 系统与数据库中。</p>
+        </div>
+        
+        <div class="intro-image-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/work_flow.png" alt="工具联动工作流图解" class="intro-image">
+        </div>
+      </div>
+    </div>
+
+<div class="feature-section">
+      <div class="badge" style="margin-bottom: 1rem;">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+          <path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"></path>
+          <circle cx="12" cy="10" r="3"></circle>
+        </svg>
+        <span>地图标注工具</span>
+      </div>
+      <h2 class="feature-section-title">让古地图的文字重新活过来</h2>
+
+      <div class="feature-row">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/ac_1.png" alt="简洁布局与功能分区" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>1. 简洁布局与功能分区</h3>
+          <p>界面设计遵循极简与高效原则。核心区域划分为：顶部导航栏（控制全局导入导出）、全屏地图画布（沉浸式查看与交互）、以及右侧边栏（集成搜索、标注样式调整与列表管理）。布局逻辑清晰，让研究者告别繁杂的软件面板，专注于史料本身的解读与数据提取。</p>
+        </div>
+      </div>
+
+      <div class="feature-row reverse">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/ac_2.png" alt="云端地图一键导入" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>2. 云端地图一键导入</h3>
+          <p>系统深度集成了云端共享图库，一键即可加载远端地图。底层采用了“混合金字塔渲染技术”（Deep Zoom），无论多大分辨率（>500MB）的历史扫描件或 GeoTIFF，都能在浏览器中实现浏览与平滑缩放。同时支持“跨图标注搜索”，帮你快速定位不同地图上的同一地名。</p>
+        </div>
+      </div>
+
+      <div class="feature-row">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/ac_3.png" alt="可自定义属性标注" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>3. 可自定义属性标注</h3>
+          <p>针对历史方志和古旧地图复杂的排版习惯，工具提供了高度自由的标注样式调节。你可以随时调整文字的大小、字距，甚至一键切换横排与竖排方向。配合丰富的快捷键支持（如 Shift 旋转、中括号调字距等），让海量地名的录入工作变得高效且符合直觉。</p>
+        </div>
+      </div>
+
+      <div class="feature-row reverse">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/ac_4.png" alt="搜索定位快速查阅" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>4. 搜索定位快速查阅</h3>
+          <p>告别肉眼寻找。你添加的每一个标注都会被系统实时建立索引。内置的搜索引擎支持“模糊匹配”和“别名检索”。只需在搜索框输入地名残片，系统即可在列表中瞬间反馈匹配结果，点击即可控制地图平滑移动并聚焦到该标注的精确位置。</p>
+        </div>
+      </div>
+
+      <div class="feature-row">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/ac_5.png" alt="像素定位与 JSON 存储" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>5. 像素定位与 JSON 存储</h3>
+          <p>你的所有工作成果绝不会被困在图像里。每一次打点，系统都会基于地图的高精度像素坐标进行独立记录。这些数据被组织成轻量、易读的 JSON 结构化文件（包含 ID、文本、像素 X/Y 等）。你可以随时将其导出为本地文件，不仅方便后续修改还原，更为之后的数据升维（如转换 GeoJSON）打下坚实基础。</p>
+        </div>
+      </div>
+    </div>
+
+<div class="feature-section">
+      <div class="badge" style="margin-bottom: 1rem;">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+          <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"></polygon>
+          <line x1="9" y1="3" x2="9" y2="18"></line>
+          <line x1="15" y1="6" x2="15" y2="21"></line>
+        </svg>
+        <span>在线地理配准工具</span>
+      </div>
+      <h2 class="feature-section-title">连接历史地图与现代坐标系</h2>
+
+      <div class="feature-row">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/gr_1.png" alt="QGIS同款布局分区" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>1. QGIS同款布局分区</h3>
+          <p>界面设计深度参考了 QGIS 等专业桌面 GIS 软件的经典布局。左侧为待配准的历史原图，右侧为接入了天地图的现代参照底图，底部则是直观的控制点（GCPs）管理面板。双屏联动的同屏打点方式，不仅让专业用户得心应手，也极大降低了初学者和跨领域学者的学习成本。</p>
+        </div>
+      </div>
+
+      <div class="feature-row reverse">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/gr_2.png" alt="纯前端超大图浏览" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>2. 纯前端超大图浏览</h3>
+          <p>彻底打破传统 Web GIS 对服务器切片引擎的依赖。凭借 OpenSeadragon 框架与 GeoTIFF.js 的深度融合，工具在纯浏览器环境下即可利用“动态混合金字塔切片”技术，流畅加载并渲染动辄数 GB 的超大分辨率高清历史图像，全程无需上传服务器，保障数据隐私与极致速度。</p>
+        </div>
+      </div>
+
+      <div class="feature-row">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/gr_3.png" alt="配准地图叠加预览" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>3. 配准地图叠加预览</h3>
+          <p>提供极速的配准视觉反馈。当你打下足够的控制点后，系统底层会运用最小二乘法算法，在现代底图上渲染出历史地图的高清叠加层。系统支持从一阶仿射到三阶多项式等多种空间变换模型，并实时计算展示每个控制点的 RMS 误差，助你精准校对每一寸地理细节。</p>
+        </div>
+      </div>
+
+      <div class="feature-row reverse">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/gr_4.png" alt="数据互通与软件兼容" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>4. 数据互通与软件兼容</h3>
+          <p>坚持开放的数据标准，绝不“绑架”你的研究成果。你可以在此完成轻量化的前期工作，随后将控制点位（TXT/CSV）、空间坐标参考文件（TFW），甚至压制好地理坐标的完整 GeoTIFF 影像一键下载至本地。所有产出均与 ArcGIS、QGIS、奥维互动地图等主流专业软件完美兼容。</p>
+        </div>
+      </div>
+
+      <div class="feature-row">
+        <div class="feature-img-wrapper">
+          <img src="https://map-1259748679.cos.ap-guangzhou.myqcloud.com/web_image/gr_5.png" alt="工具联动与坐标转换" loading="lazy">
+        </div>
+        <div class="feature-text card">
+          <h3>5. 工具联动与坐标转换</h3>
+          <p>这是工作流中最具价值的一环。完成地图配准后，你可以直接导入“地图标注工具”生成的独立像素 JSON 文件。系统会利用当前解算出的仿射变换矩阵，将原本只懂“X/Y 像素位置”的纯文本标注，一键升维转换成带有标准经纬度坐标的 GeoJSON 地理矢量数据，彻底将其接入现代空间数据库。</p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+<div class="control-panel">
+    <span>Time ⏱️</span>
+    <input type="range" id="timeSlider" min="0" max="24" step="0.01" value="12" style="width: 100px;">
+    <div id="resetTimeBtn" class="reset-time-btn" title="恢复实时时间">
+      <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+      </svg>
+    </div>
+    
+    <div style="width:1px; height:14px; background:rgba(255,255,255,0.4); margin:0 4px;"></div>
+    
+    <span id="currentWeatherIcon" style="font-size: 14px; margin: 0 2px;">☀️</span>
+    <div id="switchWeatherBtn" class="switch-weather-btn" title="随机切换天气">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+      </svg>
+    </div>
+  </div>
+
+  <script>
+  const root = document.documentElement;
+    const timeDisplay = document.getElementById('timeDisplay');
+    const timeSlider = document.getElementById('timeSlider');
+    const controlPanel = document.querySelector('.control-panel');
+    const resetTimeBtn = document.getElementById('resetTimeBtn');
+    
+    let manualTime = false;
+    let manualHours = 12;
+    let currentAppHours = 12; // 全局共享当前时间
+    let shootingStars = [];   // 独立的流星数组
+    let auroraPhase = 0;      // 极光动画相位
+
+    // --- 顶级多维色温演算引擎 ---
+    const stops = [
+      { h: 0,   orb: [200, 220, 255], bg: [10, 15, 30],   text: [230, 240, 255], night: 0.85, scale: 0.55, shadow: 0.4 },  
+      { h: 5,   orb: [200, 220, 255], bg: [15, 20, 35],   text: [230, 240, 255], night: 0.8,  scale: 0.55, shadow: 0.4 },  
+      { h: 6.5, orb: [255, 170, 120], bg: [255, 210, 180],text: [90, 60, 60],    night: 0.2,  scale: 0.8,  shadow: 0.1 },  
+      { h: 9,   orb: [250, 245, 235], bg: [250, 248, 245],text: [44, 62, 80],    night: 0.0,  scale: 1.0,  shadow: 0.04 }, 
+      { h: 12,  orb: [240, 248, 255], bg: [253, 253, 253],text: [44, 62, 80],    night: 0.0,  scale: 1.0,  shadow: 0.03 }, 
+      { h: 16,  orb: [255, 240, 230], bg: [250, 248, 245],text: [44, 62, 80],    night: 0.0,  scale: 1.0,  shadow: 0.04 }, 
+      { h: 18,  orb: [255, 140, 100], bg: [240, 180, 160],text: [80, 50, 50],    night: 0.35, scale: 0.85, shadow: 0.15 }, 
+      { h: 19.5,orb: [180, 200, 255], bg: [20, 25, 45],   text: [220, 230, 250], night: 0.75, scale: 0.6,  shadow: 0.35 }, 
+      { h: 24,  orb: [200, 220, 255], bg: [10, 15, 30],   text: [230, 240, 255], night: 0.85, scale: 0.55, shadow: 0.4 }   
+    ];
+
+    function lerp(start, end, amt) { return (1 - amt) * start + amt * end; }
+
+    function getEnvState(hour) {
+      let h = hour % 24;
+      for (let i = 0; i < stops.length - 1; i++) {
+        const s1 = stops[i], s2 = stops[i+1];
+        if (h >= s1.h && h <= s2.h) {
+          const p = (h - s1.h) / (s2.h - s1.h);
+          return {
+            orb:   [Math.round(lerp(s1.orb[0], s2.orb[0], p)), Math.round(lerp(s1.orb[1], s2.orb[1], p)), Math.round(lerp(s1.orb[2], s2.orb[2], p))],
+            bg:    [Math.round(lerp(s1.bg[0], s2.bg[0], p)), Math.round(lerp(s1.bg[1], s2.bg[1], p)), Math.round(lerp(s1.bg[2], s2.bg[2], p))],
+            text:  [Math.round(lerp(s1.text[0], s2.text[0], p)), Math.round(lerp(s1.text[1], s2.text[1], p)), Math.round(lerp(s1.text[2], s2.text[2], p))],
+            night: lerp(s1.night, s2.night, p).toFixed(3),
+            scale: lerp(s1.scale, s2.scale, p).toFixed(3),
+            shadow:lerp(s1.shadow, s2.shadow, p).toFixed(3)
+          };
+        }
+      }
+      return stops[0]; 
+    }
+
+// --- 极简随机气象引擎 (严格权重控制版) ---
+    const weatherIcons = { 
+      'clear': '☀️', 'fog': '🌫️', 'rain': '🌧️', 
+      'snow': '❄️', 'hail': '🧊⚡', 'aurora': '🌌', 'eclipse': '🌘'
+    };
+
+    function getRandomWeather() {
+      const isNight = currentAppHours < 6 || currentAppHours >= 18;
+      // 生成 0 到 100 之间的随机浮点数进行概率判定
+      const roll = Math.random() * 100; 
+      
+      // 【奇观级】 1%：日/月食 (0 ~ 1)
+      if (roll <= 1) return 'eclipse';
+      
+      // 【奇观级】 1%：极光 (1 ~ 2) - 注：仅在夜晚触发，如果在白天抽中极光，则自动转为晴天
+      if (roll > 1 && roll <= 2) return isNight ? 'aurora' : 'clear';
+      
+      // 【较稀有】 5%：雷暴冰雹 (2 ~ 7)
+      if (roll > 2 && roll <= 7) return 'hail';
+      
+      // 【较少见】 13%：雪天 (7 ~ 20)
+      if (roll > 7 && roll <= 20) return 'snow';
+      
+      // 【较少见】 15%：雾天 (20 ~ 35)
+      if (roll > 20 && roll <= 35) return 'fog';
+      
+      // 【最常见】 30%：雨天 (35 ~ 65)
+      if (roll > 35 && roll <= 65) return 'rain';
+      
+      // 【最常见】 35%：晴天 (65 ~ 100 兜底。如果是白天，还会额外吸收极光的 1% 概率)
+      return 'clear';
+    }
+
+    let currentW = 'clear'; // 初始站位，稍后由代码随机分配
+
+    // --- 光影全息演算与滑块同步 ---
+    function updateEnvironment() {
+      const now = new Date();
+      const realHours = now.getHours() + (now.getMinutes() / 60) + (now.getSeconds() / 3600);
+      currentAppHours = manualTime ? manualHours : realHours;
+      
+      const displayH = Math.floor(currentAppHours);
+      const displayM = Math.floor((currentAppHours - displayH) * 60);
+      timeDisplay.innerText = `${String(displayH).padStart(2, '0')}:${String(displayM).padStart(2, '0')}`;
+
+      if (!manualTime) { timeSlider.value = currentAppHours; }
+      
+      const progressPercent = (currentAppHours / 24) * 100;
+      timeSlider.style.background = `linear-gradient(to right, rgba(255,255,255,0.9) ${progressPercent}%, rgba(255,255,255,0.2) ${progressPercent}%)`;
+
+      // 实时计算天气带来的压暗系数 (极光只在夜晚产生环境压暗)
+      let dim = '0';
+      if (currentW === 'rain') dim = '0.25';
+      else if (currentW === 'snow') dim = '0.1';
+      else if (currentW === 'hail') dim = '0.88'; // 关键修改：雷暴天气环境极度压暗
+      else if (currentW === 'aurora') {
+        dim = (currentAppHours < 6 || currentAppHours >= 18) ? '0.65' : '0';
+      }
+      root.style.setProperty('--weather-dim', dim);
+
+      const state = getEnvState(currentAppHours);
+      root.style.setProperty('--env-color', `${state.orb[0]}, ${state.orb[1]}, ${state.orb[2]}`);
+      root.style.setProperty('--bg-bottom', `${state.bg[0]}, ${state.bg[1]}, ${state.bg[2]}`);
+      root.style.setProperty('--text-rgb', `${state.text[0]}, ${state.text[1]}, ${state.text[2]}`);
+      root.style.setProperty('--night-alpha', state.night);
+      root.style.setProperty('--orb-scale', state.scale);
+      root.style.setProperty('--shadow-alpha', state.shadow);
+
+      const isDay = currentAppHours >= 6 && currentAppHours < 18;
+      let progress = isDay ? (currentAppHours - 6) / 12 : (currentAppHours >= 18 ? currentAppHours - 18 : currentAppHours + 6) / 12;
+      const angle = (1 - progress) * Math.PI; 
+      
+      const sunX = 50 + Math.cos(angle) * 60; 
+      const sunY = 100 - Math.sin(angle) * 80;
+      root.style.setProperty('--light-x', `${sunX}%`);
+      root.style.setProperty('--light-y', `${sunY}%`);
+
+      const shadowDx = -Math.cos(angle) * 20; 
+      const shadowDy = 10 + Math.sin(angle) * 15; 
+      const shadowDist = 20 + Math.sin(angle) * 15; 
+      root.style.setProperty('--shadow-dx', `${shadowDx}px`);
+      root.style.setProperty('--shadow-dy', `${shadowDy}px`);
+      root.style.setProperty('--shadow-dist', `${shadowDist}px`);
+    }
+
+// 覆盖原本的 applyWeather 函数，处理日夜不同的图标
+    function applyWeather(type) {
+      currentW = type;
+      document.body.setAttribute('data-weather', type);
+      
+      let isNight = currentAppHours < 6 || currentAppHours >= 18;
+      let displayIcon = weatherIcons[type];
+      // 如果是夜晚的 eclipse，图标变成血月
+      if (type === 'eclipse') displayIcon = isNight ? '🩸' : '🌘'; 
+      
+      document.getElementById('currentWeatherIcon').innerText = displayIcon;
+      initWeatherParticles(type);
+      updateEnvironment(); 
+    }
+
+    setInterval(updateEnvironment, 100);
+
+    // --- 交互按钮监听 ---
+    timeSlider.addEventListener('input', (e) => {
+      manualTime = true;
+      manualHours = parseFloat(e.target.value);
+      controlPanel.classList.add('is-manual');
+      updateEnvironment();
+    });
+
+    resetTimeBtn.addEventListener('click', () => {
+      manualTime = false;
+      controlPanel.classList.remove('is-manual');
+      timeSlider.style.transition = 'background 0.3s ease-out';
+      updateEnvironment();
+      setTimeout(() => { timeSlider.style.transition = 'background 0.1s linear'; }, 300);
+    });
+
+    document.getElementById('switchWeatherBtn').addEventListener('click', function() {
+      let nextW;
+      do {
+        nextW = getRandomWeather();
+      } while (nextW === currentW);
+      
+      applyWeather(nextW);
+      
+      this.style.transform = 'rotate(180deg)';
+      setTimeout(() => {
+        this.style.transition = 'none';
+        this.style.transform = 'rotate(0deg)';
+        setTimeout(() => this.style.transition = 'all 0.4s cubic-bezier(0.16, 1, 0.3, 1)', 10);
+      }, 400);
+    });
+
+
+    // --- 终极微气象引擎 (Canvas Particles) ---
+    const canvas = document.getElementById('weatherCanvas');
+    const ctx = canvas.getContext('2d');
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+    
+    window.addEventListener('resize', () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+
+    let particles = [];
+
+// --- 闪电生成引擎 (性能优化 & 极简形态版) ---
+    let flashAlpha = 0;
+    let lightningPaths = [];
+    let flashFlickerCount = 0; // 记录当前这道闪电的频闪次数
+
+    function generateLightning(startX, startY) {
+      let paths = [];
+      // 增加 depth 参数限制分叉深度
+      function createBranch(x, y, angle, length, branchWidth, depth) {
+        let path = [{x, y}];
+        path.width = branchWidth;
+        let cx = x, cy = y;
+        let segments = Math.floor(length / 25); // 加大段距，减少折线顶点数，提升性能
+        
+        for (let i = 0; i < segments; i++) {
+          cx += Math.cos(angle) * (20 + Math.random() * 20);
+          cy += Math.sin(angle) * (20 + Math.random() * 20);
+          angle += (Math.random() - 0.5) * 0.8; // 让闪电走势更平缓一点
+          path.push({x: cx, y: cy});
+          
+          // 极致精简分叉：仅在主干(depth 0)上极小概率产生一次小分叉
+          if (depth === 0 && Math.random() < 0.05 && branchWidth > 1.5) {
+            createBranch(cx, cy, angle + (Math.random() > 0.5 ? 0.5 : -0.5), length * 0.4, branchWidth * 0.6, depth + 1);
+          }
+        }
+        paths.push(path);
+      }
+      // 生成主干
+      createBranch(startX, startY, Math.PI/2 + (Math.random()-0.5)*0.3, height * (0.6 + Math.random()*0.3), 3, 0);
+      return paths;
+    }
+
+    function initWeatherParticles(type) {
+      particles = [];
+      let count = 0;
+      if (type === 'rain') count = 120;
+      else if (type === 'clear') count = 65;
+      else if (type === 'fog') count = 90;
+      else if (type === 'wind') count = 100;
+      else if (type === 'snow') count = 180;
+      else if (type === 'hail') count = 50;
+      else if (type === 'aurora') count = 120; // 极光状态下伴随星空
+      else if (type === 'eclipse') count = 150; // 密集的浮烬
+
+      for(let i=0; i<count; i++) {
+        particles.push({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          s: (type === 'rain') ? Math.random() * 2 + 1.5 : 
+             (type === 'wind') ? Math.random() * 3 + 2 :
+             (type === 'hail') ? Math.random() * 3 + 2 :
+             (type === 'snow') ? Math.random() * 2 + 0.5 :
+             (type === 'aurora') ? Math.random() * 1.5 + 0.2 :
+	      (type === 'eclipse') ? Math.random() * 2 + 0.5 :
+             (type === 'fog') ? Math.random() * 3 + 1.5 : Math.random() * 2.5 + 1,
+          v: (type === 'rain') ? Math.random() * 18 + 12 : 
+             (type === 'wind') ? Math.random() * 25 + 15 :
+             (type === 'hail') ? Math.random() * 30 + 20 :
+             (type === 'snow') ? Math.random() * 1.5 + 0.5 :
+	      (type === 'eclipse') ? Math.random() * 1.5 + 0.2 :
+             (type === 'fog') ? Math.random() * 0.1 + 0.02 : Math.random() * 0.4 + 0.1,
+          a: (type === 'wind') ? 0.8 : Math.random() * Math.PI * 2,
+          o: (type === 'fog') ? Math.random() * 0.4 + 0.2 : 
+             (type === 'aurora') ? Math.random() * 0.8 + 0.2 : Math.random() * 0.5 + 0.1,
+          swing: Math.random() * Math.PI * 2 // 用于下雪和极光星空的随机相位
+        });
+      }
+    }
+
+    function renderWeather() {
+      ctx.clearRect(0, 0, width, height);
+      let isNight = currentAppHours < 6 || currentAppHours >= 18;
+
+      // 1. 全局流星系统 (夜晚触发，且屏蔽雨、雪、冰雹天气，频率两倍，大小两倍)
+      if (isNight && currentW !== 'rain' && currentW !== 'snow' && currentW !== 'hail') {
+        // 频率翻倍：大约提升到每 30 秒一颗 (60fps * 30s = 1800)
+        if (Math.random() < 1/1800) {
+          shootingStars.push({
+            x: Math.random() * width * 1.2, 
+            y: Math.random() * (height * 0.4), 
+            // 长度翻倍：原 40~120，现 80~240
+            length: Math.random() * 160 + 80,
+            // 速度稍微调快一点，匹配更大的体量感
+            speed: Math.random() * 20 + 20, 
+            angle: Math.PI / 6 + (Math.random() * 0.1), 
+            life: 1.0, decay: 0.01 + Math.random() * 0.01
+          });
+        }
+        for (let i = shootingStars.length - 1; i >= 0; i--) {
+          let star = shootingStars[i];
+          ctx.save();
+          let endX = star.x - Math.cos(star.angle) * star.length;
+          let endY = star.y + Math.sin(star.angle) * star.length;
+          let grad = ctx.createLinearGradient(star.x, star.y, endX, endY);
+          grad.addColorStop(0, `rgba(255, 255, 255, ${star.life})`);
+          grad.addColorStop(1, `rgba(255, 255, 255, 0)`);
+          
+          ctx.beginPath();
+          ctx.moveTo(star.x, star.y);
+          ctx.lineTo(endX, endY);
+          ctx.strokeStyle = grad; 
+          // 粗细翻倍：原 2，现 4
+          ctx.lineWidth = 4; 
+          // 光晕范围放大，匹配流星大小
+          ctx.shadowBlur = 20; 
+          ctx.shadowColor = 'rgba(255, 255, 255, 0.9)';
+          ctx.stroke(); ctx.restore();
+
+          star.x -= Math.cos(star.angle) * star.speed;
+          star.y += Math.sin(star.angle) * star.speed;
+          star.life -= star.decay;
+          if (star.life <= 0) shootingStars.splice(i, 1);
+        }
+      }
+
+      // 2. 当前物理气象渲染
+      particles.forEach(p => {
+       if (currentW === 'rain' || currentW === 'hail') {
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          // 冰雹下降速度更快，并带有轻微倾角
+          let dx = currentW === 'hail' ? p.v * 0.2 : (currentW === 'rain' ? p.v * 0.15 : 0);
+          let dy = p.v;
+          
+          ctx.lineTo(p.x - dx, p.y + dy);
+          // 闪电爆发时，照亮半空中的雨点和冰雹
+          let particleIllumination = currentW === 'hail' ? p.o + flashAlpha * 0.8 : p.o;
+          ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(particleIllumination, 1)})`;
+          ctx.lineWidth = currentW === 'hail' ? p.s : 1.5;
+          ctx.lineCap = 'round';
+          
+          ctx.shadowBlur = currentW === 'hail' ? 2 : 6;
+          ctx.shadowColor = `rgba(255, 255, 255, ${particleIllumination * 2})`;
+          ctx.stroke(); ctx.shadowBlur = 0;
+          
+          p.y += dy; p.x -= dx;
+          
+          if(p.y > height || p.x < 0) { 
+            p.y = -20; p.x = Math.random() * width + 50; 
+          }
+        }
+        else if (currentW === 'snow') {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.s, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(255, 255, 255, ${p.o + 0.2})`;
+          ctx.shadowBlur = 5; ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
+          ctx.fill(); ctx.shadowBlur = 0;
+          
+          p.y += p.v; p.x += Math.sin(p.y * 0.02 + p.swing) * 0.8; 
+          if(p.y > height) { p.y = -10; p.x = Math.random() * width; }
+        } 
+        else if (currentW === 'aurora' && isNight) {
+          // 仅在夜晚绘制极光星空与发光波浪
+          p.swing += 0.02;
+          let twinkle = p.o + Math.sin(p.swing) * 0.4;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.s, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(255, 255, 255, ${Math.max(0.05, twinkle)})`;
+          ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(200, 230, 255, 0.6)';
+          ctx.fill(); ctx.shadowBlur = 0;
+        } 
+        else if (currentW === 'clear' || (currentW === 'aurora' && !isNight)) {
+          // 光尘 (白天抽到极光时降级为普通晴天)
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.s, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(255, 250, 240, ${p.o + 0.3})`; 
+          ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(0, 0, 0, 0.2)'; 
+          ctx.fill(); ctx.shadowBlur = 0; 
+          
+          p.x += Math.cos(p.a) * p.v; p.y += Math.sin(p.a) * p.v;
+          if(p.x < 0 || p.x > width || p.y < 0 || p.y > height) {
+            p.x = Math.random() * width; p.y = Math.random() * height;
+          }
+        } 
+
+	else if (currentW === 'eclipse') {
+          // 4. 磁场异常：反重力猩红浮烬
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.s, 0, Math.PI*2);
+          // 灰烬颜色在深红和纯黑之间随机，偶尔闪烁纯白的高温火星
+          let isHot = Math.random() > 0.98;
+          ctx.fillStyle = isHot ? `rgba(255, 255, 255, ${p.o + 0.5})` : `rgba(${150 + Math.random()*100}, 10, 20, ${p.o})`;
+          ctx.shadowBlur = isHot ? 8 : 4; 
+          ctx.shadowColor = 'rgba(255, 0, 0, 0.8)';
+          ctx.fill(); ctx.shadowBlur = 0;
+          
+          // 物理特性：反重力向上飘升，并伴随不可预测的左右磁场抖动
+          p.y -= p.v; 
+          p.x += Math.sin(p.y * 0.05 + p.swing) * 1.5;
+          
+          if(p.y < -10) { 
+            p.y = height + 10; 
+            p.x = Math.random() * width; 
+          }
+        }
+
+        else if (currentW === 'fog') {
+          // 露珠凝结
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(255, 255, 255, ${p.o * 0.3})`; ctx.fill();
+          
+          ctx.beginPath(); ctx.arc(p.x - p.s * 0.3, p.y - p.s * 0.3, p.s * 0.25, 0, Math.PI*2);
+          ctx.fillStyle = `rgba(255, 255, 255, ${p.o * 1.5})`; ctx.fill();
+          
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, Math.PI*2);
+          ctx.strokeStyle = `rgba(0, 0, 0, 0.08)`; ctx.lineWidth = 0.5; ctx.stroke();
+
+          p.y += p.v;
+          if(Math.random() > 0.95) p.x += (Math.random() - 0.5) * 0.4;
+          if(p.y > height + 10) { p.y = -10; p.x = Math.random() * width; }
+        }
+      });
+
+// 3. 冰雹天气的雷暴闪电渲染 (高性能多层叠绘版)
+      if (currentW === 'hail') {
+        if (Math.random() < 0.0025 && flashAlpha < 0.05) {
+          flashAlpha = 1.0 + Math.random() * 0.5; 
+          flashFlickerCount = 0; // 每次生成新闪电时，重置频闪次数
+          lightningPaths = generateLightning(Math.random() * width, 0);
+        }
+
+        if (flashAlpha > 0.01) {
+          root.style.setProperty('--flash-v', Math.min(flashAlpha, 1));
+          
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          
+          // 【性能优化核心】弃用极其耗能的 ctx.filter，改用底色宽线条模拟发散
+          for (let path of lightningPaths) {
+            ctx.beginPath();
+            ctx.moveTo(path[0].x, path[0].y);
+            for (let i = 1; i < path.length; i++) {
+              ctx.lineTo(path[i].x, path[i].y);
+            }
+            
+            // 第一层：最外层的宽大发散云雾 (模拟 blur)
+            ctx.strokeStyle = `rgba(180, 210, 255, ${flashAlpha * 0.25})`;
+            ctx.lineWidth = path.width * 6;
+            ctx.stroke();
+
+            // 第二层：发光光晕 (降低 shadowBlur 半径以保帧率)
+            ctx.strokeStyle = `rgba(220, 240, 255, ${flashAlpha * 0.8})`;
+            ctx.lineWidth = path.width * 1.5;
+            ctx.shadowBlur = 12; // 适度的发光
+            ctx.shadowColor = `rgba(180, 220, 255, ${flashAlpha})`;
+            ctx.stroke();
+            
+            // 第三层：白色的高亮电弧芯
+            ctx.strokeStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+            ctx.lineWidth = path.width * 0.5;
+            ctx.shadowBlur = 0;
+            ctx.stroke();
+          }
+          
+          // 模拟全屏云层散射泛光
+          ctx.fillStyle = `rgba(180, 210, 255, ${flashAlpha * 0.06})`;
+          ctx.fillRect(0, 0, width, height);
+          ctx.restore();
+
+          // 【频闪控制器】最多允许连闪 5 次
+          if (Math.random() < 0.15 && flashFlickerCount < 5) {
+            flashAlpha += 0.35; 
+            flashFlickerCount++;
+          }
+          
+          flashAlpha *= 0.82; // 亮度自然衰减
+        } else {
+          root.style.setProperty('--flash-v', 0);
+        }
+      }
+
+      // 单独绘制极光飘带 (仅限触发且在夜晚)
+      if (currentW === 'aurora' && isNight) {
+        // 降低整体相位更新速度，让飘动更悠长优雅
+        auroraPhase += 0.005; 
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen'; 
+
+        // 重新定义光幕：调整了速度、基础高度和控制折叠的复合频率
+        const bands = [
+          // 底层：宽大、深邃、缓慢
+          { r: 0,   g: 255, b: 150, yBase: height * 0.25, amp: 85, f: 0.0012, speed: 0.8, offset: 0 },
+          // 中层：明亮、灵动、折叠明显
+          { r: 0,   g: 200, b: 255, yBase: height * 0.32, amp: 65, f: 0.0018, speed: 1.2, offset: 2.5 },
+          // 顶层：紫粉色点缀、高频微扰
+          { r: 180, g: 60,  b: 255, yBase: height * 0.20, amp: 45, f: 0.0025, speed: 1.5, offset: 5 }
+        ];
+
+        let step = 3; // 稍微调密一点，让折叠边缘更细腻
+        bands.forEach((b, i) => {
+          // 构建渐变：底部锐利，向上逐渐消散，模拟磁力线
+          let grad = ctx.createLinearGradient(0, -60, 0, height * 0.5);
+          grad.addColorStop(0, `rgba(${b.r}, ${b.g}, ${b.b}, 0)`);
+          grad.addColorStop(0.2, `rgba(${b.r}, ${b.g}, ${b.b}, 0.9)`); // 发光核心
+          grad.addColorStop(0.7, `rgba(${b.r}, ${b.g}, ${b.b}, 0.1)`);
+          grad.addColorStop(1, `rgba(${b.r}, ${b.g}, ${b.b}, 0)`);
+          ctx.fillStyle = grad;
+
+          for (let x = 0; x <= width; x += step) {
+            // 1. 【复合流形折叠算式】 (Manifold Folding)
+            // 基础长波：控制整体的起伏形态
+            let wave1 = Math.sin(x * b.f + auroraPhase * b.speed);
+            // 逆向中波：制造视觉上的“折叠”和“重叠”感
+            let wave2 = Math.sin(x * b.f * 2.8 - auroraPhase * b.speed * 1.3 + b.offset);
+            // 高频短波：边缘的丝滑微小褶皱
+            let wave3 = Math.sin(x * b.f * 5.5 + auroraPhase * b.speed * 2);
+
+            let yCur = b.yBase 
+                     + wave1 * b.amp 
+                     + wave2 * (b.amp * 0.4) 
+                     + wave3 * (b.amp * 0.15);
+
+            // 2. 【折叠密度与脉冲亮度混合】
+            // 基础扫光脉冲 (缓慢的明暗呼吸)
+            let sweepPos = (x * 0.0015) - (auroraPhase * b.speed * 0.5) + b.offset;
+            let pulse = Math.pow(Math.sin(sweepPos) * 0.5 + 0.5, 2);
+            
+            // 几何折叠增亮：用逆向中波模拟视线上堆积的厚度，制造立体感
+            let foldDensity = Math.pow(wave2 * 0.5 + 0.5, 2);
+
+            // 混合计算最终透明度
+            let finalAlpha = (pulse * 0.6 + foldDensity * 0.4) * 0.85;
+
+            // 引入一点微小的随机湍流闪烁 (气体感)
+            finalAlpha += Math.random() * 0.03;
+
+            if (finalAlpha > 0.02) {
+              ctx.save();
+              ctx.translate(x, yCur);
+              ctx.globalAlpha = Math.min(finalAlpha, 1); // 防止过曝
+              
+              // 绘制射线：底部略微下沉，顶部向上拉伸
+              ctx.fillRect(0, -60, step + 0.8, height * 0.6); 
+              ctx.restore();
+            }
+          }
+        });
+        ctx.restore();
+      }
+      requestAnimationFrame(renderWeather);
+    }
+
+    // 初始化时更新一次真实环境与随机天气
+    updateEnvironment(); 
+    applyWeather(getRandomWeather());
+    renderWeather();
+
+    // --- 3D 悬浮液体玻璃跟手交互 ---
+    const cards = document.querySelectorAll('.card');
+    cards.forEach(card => {
+      card.addEventListener('mousemove', e => {
+        const rect = card.getBoundingClientRect();
+        const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+        card.style.setProperty('--mouse-x', `${x}px`); card.style.setProperty('--mouse-y', `${y}px`);
+
+        const centerX = rect.width / 2; const centerY = rect.height / 2;
+        const rotateX = ((y - centerY) / centerY) * -5; const rotateY = ((x - centerX) / centerX) * 5;
+
+        card.style.transform = `perspective(1200px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
+        card.style.transition = 'transform 0.1s ease-out';
+      });
+
+      card.addEventListener('mouseleave', () => {
+        card.style.transform = `perspective(1200px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)`;
+        card.style.transition = 'transform 0.8s cubic-bezier(0.16, 1, 0.3, 1)';
+      });
+      card.addEventListener('mouseenter', () => { card.style.transition = 'transform 0.1s ease-out'; });
+    });
+
+    // --- 丝滑页面跳转拦截 ---
+    const navLinks = document.querySelectorAll('a.card');
+    navLinks.forEach(link => {
+      link.addEventListener('click', function(e) {
+        e.preventDefault(); 
+        const targetUrl = this.getAttribute('href');
+        this.closest('.card-wrapper').classList.add('selected');
+        document.body.classList.add('page-transitioning');
+        setTimeout(() => { window.location.href = targetUrl; }, 600);
+      });
+    });
+
+  </script>
+</body>
+</html>

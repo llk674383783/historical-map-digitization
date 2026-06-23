@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>历史地图标注</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/openseadragon@4.1.1/build/openseadragon/openseadragon.min.js"></script>
+<script src="https://unpkg.com/fuse.js@7.0.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
+
+<style>
+  :root {
+    --accent: #2563eb;
+    --bg-body: #f8fafc;
+    --bg-stage: #e2e8f0;
+    --border-light: #e2e8f0;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+  }
+  
+  html, body {
+    font-size: 14px;
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-family: Inter, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text-main);
+    background: var(--bg-body);
+  }
+
+  /* 优雅的细体定制滚动条 */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+  header {
+    padding: 0.8rem 1.5rem;
+    border-bottom: 1px solid var(--border-light);
+    position: sticky;
+    top: 0;
+    /* 毛玻璃效果 */
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 10;
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  }
+  header h1 { font-size: 1.15rem; margin: 0; font-weight: 600; color: #0f172a; letter-spacing: -0.01em; }
+  
+  .pill { padding: 0.2rem 0.6rem; border-radius: 999px; border: 1px solid var(--border-light); background: #f1f5f9; font-size: 0.75rem; color: var(--text-muted); font-weight: 500; }
+  
+  .btn {
+    border: 1px solid var(--border-light);
+    padding: 0.45rem 0.8rem;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    color: var(--text-main);
+  }
+  .btn:hover:not(:disabled) { border-color: #cbd5e1; background: #f8fafc; transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+  .btn:active:not(:disabled) { transform: translateY(0); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+  .btn.secondary { background: #f1f5f9; border-color: transparent; }
+  .btn.secondary:hover:not(:disabled) { background: #e2e8f0; }
+  .btn.toggled { box-shadow: 0 0 0 2px rgba(37,99,235,.2) inset; background: #eff6ff; border-color: #bfdbfe; color: var(--accent); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  
+  #app { display: flex; flex: 1; min-height: 0; }
+  
+  #stage { position: relative; flex: 1; background: var(--bg-stage); overflow: hidden; }
+  /* 专业制图软件风格的点状网格背景 */
+  #stage::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+    background-size: 24px 24px; pointer-events: none; opacity: 0.6;
+  }
+  
+  #viewer { position: absolute; inset: 0; }
+  #overlayCanvas { position: absolute; inset: 0; pointer-events: none; }
+  
+  aside { width: 380px; max-width: 45vw; border-left: 1px solid var(--border-light); background: #f8fafc; overflow-y: auto; padding: 1.2rem; display: flex; flex-direction: column; gap: 1.2rem; }
+  
+  .card { background: #fff; border: 1px solid var(--border-light); border-radius: 16px; padding: 1.25rem; box-shadow: 0 4px 20px -4px rgba(15, 23, 42, 0.04); }
+  .row { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.4rem; }
+  .grow { flex: 1; }
+  .muted { color: var(--text-muted); font-size: 0.85em; }
+  
+  .list { display: flex; flex-direction: column; gap: 0.4rem; }
+  .item { border: 1px solid transparent; border-radius: 10px; padding: 0.6rem 0.8rem; display: flex; align-items: center; gap: 0.6rem; cursor: pointer; background: #fbfbfc; transition: all 0.2s; }
+  .item:hover { background: #f1f5f9; border-color: #e2e8f0; }
+  .item.active { border-color: #bfdbfe; background: #eff6ff; box-shadow: 0 2px 8px rgba(37,99,235,0.06); }
+  
+  .hidden-input { display: none; }
+  .crosshair .openseadragon-canvas { cursor: crosshair !important; }
+  
+  .editor { position: absolute; transform: translate(0, -50%); background: rgba(255,255,255,0.95); border: 1px solid #bfdbfe; border-radius: 8px; padding: 0.4rem 0.6rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); z-index: 100; backdrop-filter: blur(4px); }
+  .editor[contenteditable="true"] { outline: none; min-width: 80px; min-height: 24px; font-size: 15px; line-height: 1.4; font-family: "Noto Serif SC", serif; white-space: nowrap; color: #0f172a; }
+  .floating-hint { position: absolute; transform: translate(-50%, -180%); background: #1e293b; color: #fff; font-size: 11px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; z-index: 101; font-weight: 500; letter-spacing: 0.02em; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  
+  input[type="text"], input[type="number"], select {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    font-size: 0.9em;
+    color: var(--text-main);
+    background: #fff;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  input[type="text"]:focus, input[type="number"]:focus, select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+  }
+  input[type="number"] { width: 7.5rem; }
+  input[type="checkbox"] { accent-color: var(--accent); width: 1.1rem; height: 1.1rem; cursor: pointer; margin: 0; }
+  
+  .shortcut-tip { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #f1f5f9; padding: 0.1rem 0.35rem; border-radius: 4px; border: 1px solid var(--border-light); font-size: 0.8em; margin-right: 4px; color: var(--text-muted); font-weight: 500; }
+  
+  /* Loading Bar */
+  #loadingOverlay { position: fixed; inset: 0; background: rgba(255,255,255,0.85); backdrop-filter: blur(10px); z-index: 50; display: none; flex-direction: column; align-items: center; justify-content: center; }
+  .progress-bar { width: 320px; height: 6px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin-top: 1.2rem; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05); }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.15s ease-out; }
+  #loadingText { margin-top: 0.8rem; color: var(--text-muted); font-size: 0.9em; font-variant-numeric: tabular-nums; font-weight: 500; }
+  #loadingSubText { margin-top: 0.3rem; color: #94a3b8; font-size: 0.8em; }
+
+/* 地图库弹窗样式 */
+  #mapLibraryModal {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(8px);
+    z-index: 200; display: none; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.2s;
+  }
+  #mapLibraryModal.show { display: flex; opacity: 1; }
+  .modal-box {
+    background: #fff; width: 800px; max-width: 90vw; max-height: 85vh; border-radius: 16px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.2); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .modal-header {
+    padding: 1.2rem 1.5rem; border-bottom: 1px solid var(--border-light); display: flex; align-items: center; justify-content: space-between; background: #fbfcff;
+  }
+  .modal-header h2 { margin: 0; font-size: 1.2rem; font-weight: 600; color: #0f172a; }
+  .modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; background: #f8fafc; }
+  
+  .map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.5rem; }
+  .map-card {
+    background: #fff; border: 1px solid var(--border-light); border-radius: 12px; overflow: hidden;
+    transition: all 0.2s; display: flex; flex-direction: column; box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+  }
+  .map-card:hover { transform: translateY(-4px); box-shadow: 0 12px 24px -8px rgba(37,99,235,0.15); border-color: #bfdbfe; }
+  .map-card-img { width: 100%; height: 140px; background: #e2e8f0; object-fit: cover; border-bottom: 1px solid var(--border-light); }
+  .map-card-info { padding: 1rem; display: flex; flex-direction: column; gap: 0.8rem; }
+  .map-card-title { margin: 0; font-size: 1rem; font-weight: 600; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 状态徽章样式 */
+  .badge-status {
+    position: absolute; top: 10px; right: 10px;
+    padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 600;
+    backdrop-filter: blur(4px); box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    z-index: 2;
+  }
+  .badge-yes { background: rgba(16, 185, 129, 0.9); color: #fff; } /* 绿色：已标注 */
+  .badge-no { background: rgba(148, 163, 184, 0.9); color: #fff; } /* 灰色：无标注 */
+  
+  /* 让卡片相对定位，以便放置徽章 */
+  .map-card { position: relative; }
+</style>
+</head>
+<body>
+
+<div id="loadingOverlay">
+    <h3 style="margin:0; font-weight:600; color:#1e293b">正在解析地图</h3>
+    <div id="loadingText">准备读取...</div>
+    <div class="progress-bar"><div class="progress-fill" id="loadProgress"></div></div>
+    <div id="loadingSubText">正在构建预览层，请稍候...</div>
+</div>
+
+<header>
+  <h1>历史地图标注 demo1</h1>
+  <span id="status" class="pill">未加载</span>
+  <span class="grow"></span>
+<button id="mapLibraryBtn" class="btn" style="background:#10b981; border-color:#059669; color:#fff;">云端地图库</button>
+  <label for="imgFile" class="btn secondary">载入本地图像</label>
+  <input id="imgFile" type="file" accept="image/*,.tif,.tiff" class="hidden-input">
+  <button id="importJsonBtn" class="btn secondary">导入 JSON</button>
+  <button id="exportJsonBtn" class="btn primary">导出 JSON</button>
+</header>
+
+<div id="mapLibraryModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>共享地图库</h2>
+      <button id="closeLibraryBtn" class="btn secondary">关闭</button>
+    </div>
+
+<div class="modal-toolbar" style="padding: 1rem 1.5rem 0; display:flex; gap:0.8rem; align-items:center; background:#f8fafc; border-bottom: 1px solid var(--border-light); padding-bottom: 1rem;">
+      <label style="display:flex; align-items:center; cursor:pointer; font-weight:500; font-size:0.9rem; color:#334155;">
+        <input type="checkbox" id="filterAnnotated" style="margin-right:6px; width:1.1rem; height:1.1rem;"> 只看标注
+      </label>
+      <div style="width:1px; height:20px; background:#cbd5e1; margin:0 4px;"></div>
+      <input type="text" id="librarySearchInput" placeholder="输入图名或标注内容..." style="flex:1;">
+      <button id="searchNameBtn" class="btn secondary">搜索图名</button>
+      <button id="searchAnnBtn" class="btn primary">搜索标注</button>
+    </div>
+
+    <div class="modal-body">
+      <div id="mapGrid" class="map-grid">
+        </div>
+    </div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="stage">
+    <div id="viewer"></div>
+    <canvas id="overlayCanvas"></canvas>
+  </div>
+
+  <aside>
+    <div class="card">
+      <div class="row" style="gap:.6rem;">
+        <input id="searchInput" class="grow" placeholder="搜索地名或别名…（Enter）">
+        <button id="searchBtn" class="btn">搜索</button>
+      </div>
+      <div class="muted" style="margin-top:.25rem;">模糊匹配，别名也可被检索。点击结果定位。</div>
+      <div id="searchResults" class="list" style="margin-top:.4rem;"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <strong style="font-size:.95em;">标注模式</strong>
+        <span class="muted" style="display:flex; align-items:center; gap:0.2rem;">
+          <span class="shortcut-tip">E</span>
+          <label style="cursor:pointer; display:flex; align-items:center;"><input type="checkbox" id="editModeToggle" style="margin:0 4px 0 0;">开启编辑</label>
+        </span>
+      </div>
+      <div style="margin-top:.3rem;">
+        <button id="addModeBtn" class="btn" disabled>添加注记</button>
+        <button id="browseFilterBtn" class="btn secondary" style="margin-left:.35rem;">浏览过滤</button>
+        <button id="showAllBtn" class="btn secondary" style="margin-left:.15rem;">显示全部</button>
+      </div>
+      <div class="muted" style="margin:.3rem 0; line-height: 1.6;">
+        <span class="shortcut-tip">T</span>添加 <span class="shortcut-tip">V</span>切浏览/过滤 <span class="shortcut-tip">Del</span>删除<br>
+        单击放置，拖拽移动，Shift+拖拽旋转。<br>
+        <span class="shortcut-tip">'</span><span class="shortcut-tip">;</span>调字号
+        <span class="shortcut-tip">]</span><span class="shortcut-tip">[</span>调字距
+        <span class="shortcut-tip">P</span>切排版
+      </div>
+
+      <div class="row">
+        <label>字号(px)</label>
+        <input id="fontSize" type="number" min="1" step="1" value="22" disabled>
+      </div>
+      <div class="row">
+        <label>字距(px)</label>
+        <input id="letterSpacing" type="number" min="0" step="0.5" value="1.5" disabled>
+      </div>
+      <div class="row">
+        <label>排版</label>
+        <select id="orientation" disabled>
+          <option value="horizontal" selected>横排</option>
+          <option value="vertical">竖排</option>
+        </select>
+      </div>
+      <label><input type="checkbox" id="lockScreenFont"> 锁定屏幕字号（不随缩放变化）</label>
+      <div id="selectedInfo" class="muted" style="margin-top:.3rem;">未选中注记</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <strong style="font-size:.95em;">当前标注</strong>
+        <button id="clearAllBtn" class="btn secondary" style="color:#ef4444; border-color:#fca5a5; font-size:.8em; padding:.15rem .45rem;" disabled>清空全部</button>
+      </div>
+      <div id="annList" class="list" style="margin-top:.35rem; max-height:35vh; overflow-y:auto; padding-right:.2rem;"></div>
+    </div>
+
+    <div class="card">
+      <strong style="font-size:.95em;">数据</strong>
+      <div class="row muted"><span>地图 ID：</span><code id="mapId">-</code></div>
+      <div class="row muted"><span>尺寸：</span><code id="pixelSize">-</code></div>
+      <div class="row muted"><span>标注数：</span><code id="annCount">0</code></div>
+    </div>
+  </aside>
+</div>
+
+<input id="jsonFile" type="file" accept="application/json" class="hidden-input">
+
+<script>
+let viewer, overlayCanvas, ctx, stage;
+let currentImage = null; 
+let annotations = [];
+let fuse = null;
+let addMode = false;
+let selectedId = null;
+let isDragging = false, dragStart = null, rotateMode = false;
+let lockScreenFont = false;
+let dragLockedViewportCenter = null;
+let browseFilterMode = false; 
+let showAllMode = true; 
+let hoverId = null;
+let editMode = false;
+
+let tiffPool = null; 
+
+// Inline editor
+let editorEl = null, editorHint = null, editorTargetId = null;
+
+function uid(){ return 'ann_' + Math.random().toString(36).slice(2,10); }
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function deg2rad(d){ return d * Math.PI / 180; }
+function isFiniteNumber(v){ return typeof v === 'number' && Number.isFinite(v); }
+function normalizeAnnotation(raw, fallbackMapId = null, index = 0) {
+  if (!raw || typeof raw !== 'object') return null;
+  const x = Number(raw.anchor?.x);
+  const y = Number(raw.anchor?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const normalized = { ...raw };
+  normalized.id = String(raw.id ?? `ann_import_${index + 1}`);
+  normalized.mapId = raw.mapId ? String(raw.mapId) : (fallbackMapId ? String(fallbackMapId) : '');
+  normalized.text = String(raw.text ?? '');
+  normalized.aliases = Array.isArray(raw.aliases) ? raw.aliases.map(v => String(v)) : [];
+  normalized.anchor = { x, y };
+  normalized.orientation = raw.orientation === 'vertical' ? 'vertical' : 'horizontal';
+  normalized.style = (raw.style && typeof raw.style === 'object') ? raw.style : {};
+  normalized.style.fontFamily = String(normalized.style.fontFamily || 'Noto Serif SC');
+  normalized.style.fontSizePxAtScale1 = Number.isFinite(Number(normalized.style.fontSizePxAtScale1)) ? Number(normalized.style.fontSizePxAtScale1) : 22;
+  normalized.style.letterSpacing = Number.isFinite(Number(normalized.style.letterSpacing)) ? Number(normalized.style.letterSpacing) : 1.5;
+  normalized.style.fill = String(normalized.style.fill || '#000000');
+  normalized.style.stroke = (normalized.style.stroke && typeof normalized.style.stroke === 'object') ? normalized.style.stroke : {};
+  normalized.style.stroke.color = String(normalized.style.stroke.color || '#ffffff');
+  normalized.style.stroke.width = Number.isFinite(Number(normalized.style.stroke.width)) ? Number(normalized.style.stroke.width) : 2;
+  normalized.meta = (raw.meta && typeof raw.meta === 'object') ? raw.meta : {};
+  if (raw.angleDeg !== undefined) {
+    const angle = Number(raw.angleDeg);
+    if (Number.isFinite(angle)) normalized.angleDeg = angle;
+    else delete normalized.angleDeg;
+  }
+  return normalized;
+}
+function normalizeAnnotations(list, fallbackMapId = null) {
+  if (!Array.isArray(list)) return [];
+  return list.map((item, index) => normalizeAnnotation(item, fallbackMapId, index)).filter(Boolean);
+}
+
+function imagePointToScreenPx(x,y){
+  if (!viewer || viewer.world.getItemCount() === 0) return new OpenSeadragon.Point(0,0);
+  const img = new OpenSeadragon.Point(x,y);
+  const vp = viewer.world.getItemAt(0).imageToViewportCoordinates(img);
+  return viewer.viewport.pixelFromPoint(vp, true);
+}
+function pixelsPerImagePixel(){
+  if (!viewer || !currentImage || viewer.world.getItemCount() === 0) return 1;
+  const a = imagePointToScreenPx(0,0);
+  const b = imagePointToScreenPx(1,0);
+  return Math.hypot(b.x-a.x, b.y-a.y);
+}
+
+function updateStatus(){
+  document.getElementById('annCount').textContent = String(annotations.length);
+  document.getElementById('status').textContent = currentImage ? '已加载：'+currentImage.id : '未加载';
+  document.getElementById('mapId').textContent = currentImage ? currentImage.id : '-';
+  document.getElementById('pixelSize').textContent = currentImage ? `${currentImage.width}×${currentImage.height}` : '-';
+  stage.classList.toggle('crosshair', addMode);
+}
+
+const TILE_SIZE = 256; 
+let tempCanvas = document.createElement('canvas');
+tempCanvas.width = TILE_SIZE; tempCanvas.height = TILE_SIZE;
+let tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+
+// ==========================================
+// 腾讯云 COS 自动化配置 (分离目录版)
+// ==========================================
+const COS_CONFIG = {
+  BucketUrl: 'https://map-1259748679.cos.ap-guangzhou.myqcloud.com',
+  PrefixMarked: 'marked/',
+  PrefixThumb: 'thumb/',
+  PrefixJson: 'json/'
+};
+
+// 全局状态，用于存储地图库数据和当前搜索模式
+let libraryMaps = []; 
+let currentSearchMode = 'name'; // 'name' 或 'annotation'
+
+// 1. 初始化：拉取列表并缓存基本信息
+async function fetchMapListFromCOS() {
+  const grid = document.getElementById('mapGrid');
+  grid.innerHTML = '<div style="padding:2rem; color:#64748b; text-align:center; grid-column:1/-1;">正在同步云端地图库...</div>';
+
+  try {
+const timeStamp = Date.now();
+const [markedRes, jsonRes] = await Promise.all([
+  fetch(`${COS_CONFIG.BucketUrl}/?prefix=${COS_CONFIG.PrefixMarked}&t=${timeStamp}`),
+  fetch(`${COS_CONFIG.BucketUrl}/?prefix=${COS_CONFIG.PrefixJson}&t=${timeStamp}`)
+]);
+
+    if (!markedRes.ok) throw new Error(`拉取失败: ${markedRes.status}`);
+    
+    const parser = new DOMParser();
+    const markedXml = parser.parseFromString(await markedRes.text(), "text/xml");
+    const jsonXml = jsonRes.ok ? parser.parseFromString(await jsonRes.text(), "text/xml") : null;
+
+    const markedKeys = Array.from(markedXml.querySelectorAll('Contents')).map(n => n.querySelector('Key').textContent);
+    const jsonKeys = new Set(jsonXml ? Array.from(jsonXml.querySelectorAll('Contents')).map(n => n.querySelector('Key').textContent) : []);
+
+    const imageFiles = markedKeys.filter(key => key.match(/\.(jpg|jpeg|png|tif|tiff)$/i));
+
+    if (imageFiles.length === 0) {
+      grid.innerHTML = '<div style="padding:2rem; color:#64748b; text-align:center; grid-column:1/-1;">存储库中暂时没有地图。</div>';
+      return;
+    }
+
+    // 重置全局数组
+    libraryMaps = [];
+
+    imageFiles.forEach(imgKey => {
+      const fileName = imgKey.split('/').pop(); 
+      const mapName = fileName.substring(0, fileName.lastIndexOf('.')); 
+      
+      const expectedJsonName = `${mapName}_annotations.json`;
+      const expectedJsonKey = `${COS_CONFIG.PrefixJson}${expectedJsonName}`;
+      const hasAnnotation = jsonKeys.has(expectedJsonKey);
+
+      const safeFileName = encodeURIComponent(fileName);
+      const safeJsonName = encodeURIComponent(expectedJsonName);
+
+      libraryMaps.push({
+        name: mapName,
+        thumbUrl: `${COS_CONFIG.BucketUrl}/${COS_CONFIG.PrefixThumb}${safeFileName}`,
+        imgUrl: `${COS_CONFIG.BucketUrl}/${COS_CONFIG.PrefixMarked}${safeFileName}`,
+        jsonUrl: hasAnnotation ? `${COS_CONFIG.BucketUrl}/${COS_CONFIG.PrefixJson}${safeJsonName}` : null,
+        hasAnnotation: hasAnnotation,
+        annotationsData: null, // 用于缓存具体的标注JSON数据
+        matchCount: 0 // 搜索命中条数
+      });
+    });
+
+    // 初始渲染
+    applyLibraryFilters();
+
+  } catch (e) {
+    console.error(e);
+    grid.innerHTML = '';
+    const errorBox = document.createElement('div');
+    errorBox.style.cssText = 'padding:2rem; color:#ef4444; text-align:center; grid-column:1/-1;';
+    errorBox.appendChild(document.createTextNode('加载失败：请确保存储桶权限正确。'));
+    errorBox.appendChild(document.createElement('br'));
+    errorBox.appendChild(document.createElement('br'));
+    const detail = document.createElement('small');
+    detail.textContent = e.message;
+    errorBox.appendChild(detail);
+    grid.appendChild(errorBox);
+  }
+}
+
+// 2. 统一的数据过滤与渲染管线
+function applyLibraryFilters() {
+  const onlyAnnotated = document.getElementById('filterAnnotated').checked;
+  const query = document.getElementById('librarySearchInput').value.trim().toLowerCase();
+  
+  const results = libraryMaps.filter(map => {
+    // 1. 过滤“只看标注”
+    if (onlyAnnotated && !map.hasAnnotation) return false;
+    
+    // 2. 过滤“图名搜索”
+    if (currentSearchMode === 'name' && query) {
+      return map.name.toLowerCase().includes(query);
+    }
+    
+    // 3. 过滤“标注搜索”
+    if (currentSearchMode === 'annotation' && query) {
+      return map.matchCount > 0;
+    }
+    
+    return true;
+  });
+
+  renderLibraryGrid(results);
+}
+
+// 3. 执行深度的全文标注检索
+async function executeAnnotationSearch() {
+  const query = document.getElementById('librarySearchInput').value.trim().toLowerCase();
+  currentSearchMode = 'annotation';
+
+  if (!query) {
+    libraryMaps.forEach(m => m.matchCount = 0);
+    applyLibraryFilters();
+    return;
+  }
+
+  const grid = document.getElementById('mapGrid');
+  grid.innerHTML = '<div style="padding:2rem; color:#64748b; text-align:center; grid-column:1/-1;">正在云端检索所有标注数据，请稍候...</div>';
+
+  // 核心优化：并发请求所有未被缓存的标注文件
+const fetchPromises = libraryMaps
+  .filter(m => m.hasAnnotation && !m.annotationsData)
+  .map(async m => {
+    try {
+      // 加上时间戳强制刷新
+      const res = await fetch(`${m.jsonUrl}?t=${Date.now()}`); 
+      if (res.ok) {
+        const data = await res.json();
+          m.annotationsData = data.annotations || [];
+        } else {
+          m.annotationsData = [];
+        }
+      } catch (e) {
+        m.annotationsData = [];
+      }
+    });
+
+  // 等待所有缺失的 JSON 加载完毕
+  await Promise.all(fetchPromises);
+
+  // 开始统计命中次数
+  libraryMaps.forEach(m => {
+    m.matchCount = 0;
+    if (m.hasAnnotation && m.annotationsData) {
+      m.matchCount = m.annotationsData.filter(a => 
+        (a.text && a.text.toLowerCase().includes(query)) || 
+        (a.aliases && a.aliases.some(alias => alias.toLowerCase().includes(query)))
+      ).length;
+    }
+  });
+
+  applyLibraryFilters();
+}
+
+// 4. 将结果数组渲染为 DOM 卡片
+function renderLibraryGrid(mapsToRender) {
+  const grid = document.getElementById('mapGrid');
+  grid.innerHTML = '';
+  
+  if (mapsToRender.length === 0) {
+    grid.innerHTML = '<div style="padding:2rem; color:#64748b; text-align:center; grid-column:1/-1;">没有找到匹配的地图。</div>';
+    return;
+  }
+
+  mapsToRender.forEach(map => {
+    const card = document.createElement('div');
+    card.className = 'map-card';
+    
+    const badge = document.createElement('div');
+    badge.className = `badge-status ${map.hasAnnotation ? 'badge-yes' : 'badge-no'}`;
+    badge.textContent = map.hasAnnotation ? '已标注' : '无标注';
+
+    const img = document.createElement('img');
+    img.src = map.thumbUrl;
+    img.className = 'map-card-img';
+    img.alt = map.name;
+    img.loading = 'lazy';
+    img.onerror = () => { img.src = map.imgUrl; };
+
+    const info = document.createElement('div');
+    info.className = 'map-card-info';
+    info.style.paddingBottom = '1.2rem';
+
+    const title = document.createElement('h3');
+    title.className = 'map-card-title';
+    title.title = map.name;
+    title.style.marginBottom = '0.2rem';
+    title.textContent = map.name;
+    info.appendChild(title);
+
+    if (currentSearchMode === 'annotation' && map.matchCount > 0) {
+      const matchHint = document.createElement('div');
+      matchHint.style.cssText = 'font-size:0.75rem; color:#059669; background:#d1fae5; padding:4px 8px; border-radius:6px; margin-top:0.4rem; font-weight:500;';
+      matchHint.textContent = `该地图标注中有 ${map.matchCount} 条匹配结果`;
+      info.appendChild(matchHint);
+    }
+
+    const button = document.createElement('button');
+    button.className = 'btn primary load-remote-btn';
+    button.style.width = '100%';
+    button.style.marginTop = '0.8rem';
+    button.textContent = '打开载入';
+    button.onclick = () => loadRemoteMap(map);
+    info.appendChild(button);
+
+    card.appendChild(badge);
+    card.appendChild(img);
+    card.appendChild(info);
+    grid.appendChild(card);
+  });
+}
+
+// 5. 智能加载逻辑（适配无标注的情况）
+async function loadRemoteMap(mapInfo) {
+  document.getElementById('mapLibraryModal').classList.remove('show');
+  
+  const loading = document.getElementById('loadingOverlay');
+  const progressFill = document.getElementById('loadProgress');
+  const loadingText = document.getElementById('loadingText');
+  loading.style.display = 'flex';
+  
+  try {
+    progressFill.style.width = '20%';
+    loadingText.textContent = `正在下载地图：${mapInfo.name}...`;
+
+const timeStamp = Date.now(); // 获取当前时间戳
+const imgRes = await fetch(`${mapInfo.imgUrl}?t=${timeStamp}`); 
+if (!imgRes.ok) throw new Error('地图图片下载失败');
+const imgBlob = await imgRes.blob();
+const fileName = mapInfo.name + '.jpg'; 
+const imgFile = new File([imgBlob], fileName, { type: imgBlob.type });
+
+if (mapInfo.hasAnnotation && mapInfo.jsonUrl) {
+    progressFill.style.width = '60%';
+    loadingText.textContent = '检测到标注文件，正在同步...';
+    
+    // 强制拉取最新 JSON
+    const jsonRes = await fetch(`${mapInfo.jsonUrl}?t=${timeStamp}`); 
+    if (jsonRes.ok) {
+            const jsonData = await jsonRes.json();
+            // 加载图片
+            await loadLargeImage(imgFile);
+            // 注入标注
+            if (jsonData.annotations && jsonData.annotations.length > 0) {
+                annotations = normalizeAnnotations(jsonData.annotations, currentImage.id)
+                    .map(a => ({ ...a, mapId: currentImage.id }));
+                rebuildIndex();
+                refreshAnnList();
+            }
+        } else {
+            console.warn('标注文件下载失败，将仅加载地图。');
+            await loadLargeImage(imgFile);
+        }
+    } else {
+        // 无标注的情况
+        progressFill.style.width = '80%';
+        loadingText.textContent = '该地图未标注，正在作为新底图加载...';
+        // 清空现有标注（可选，看你需求，通常打开新图意味着清空旧的）
+        // annotations = []; 
+        // rebuildIndex();
+        
+        await loadLargeImage(imgFile);
+    }
+
+  } catch (err) {
+    console.error(err);
+    alert('加载失败：\n' + err.message);
+    loading.style.display = 'none';
+  }
+}
+
+function initViewer(){
+  stage = document.getElementById('stage');
+  
+  viewer = new OpenSeadragon.Viewer({
+    id:'viewer',
+    showZoomControl:false, showHomeControl:false, showFullPageControl:true,
+    prefixUrl: "https://unpkg.com/openseadragon@4.1.1/build/openseadragon/images/",
+    animationTime:.8, blendTime:.1, showNavigator:true, 
+    imageLoaderLimit: 24, 
+    timeout: 120000,       
+    smoothTileEdgesMinZoom: Infinity, 
+    subPixelRoundingForTransparency: 0
+  });
+
+  overlayCanvas = document.getElementById('overlayCanvas');
+  ctx = overlayCanvas.getContext('2d');
+  requestAnimationFrame(draw);
+
+  // Events
+  viewer.addHandler('canvas-click', (ev)=>{
+    if (!currentImage || viewer.world.getItemCount()===0) return; 
+    const web = ev.position;
+    const vp = viewer.viewport.pointFromPixel(web);
+    const img = viewer.world.getItemAt(0).viewportToImageCoordinates(vp);
+    const x = clamp(img.x,0,currentImage.width);
+    const y = clamp(img.y,0,currentImage.height);
+
+    if (addMode){
+      const ann = createAnnotationAt(x,y);
+      selectedId = ann.id;
+      openInlineEditor(ann.id, true);
+      toggleAddMode(false);
+    } else {
+      const id = pickAnnotation(web);
+      if (id){ selectedId = id; refreshAnnList(); }
+      else { selectedId = null; refreshAnnList(); }
+    }
+  });
+
+  viewer.addHandler('canvas-press', (ev)=>{
+    const id = pickAnnotation(ev.position);
+    if (!id) return;
+    selectedId = id; refreshAnnList();
+    if (!editMode) return; 
+    isDragging = true; rotateMode = ev.originalEvent.shiftKey;
+    dragStart = ev.position;
+    try{ dragLockedViewportCenter = viewer.viewport.getCenter(); }catch(e){ dragLockedViewportCenter = null; }
+  });
+  viewer.addHandler('canvas-drag', (ev)=>{
+    if (!isDragging || !selectedId) return;
+    const a = annotations.find(x=>x.id===selectedId); if (!a) return;
+    if (rotateMode){
+      const center = imagePointToScreenPx(a.anchor.x,a.anchor.y);
+      const a1 = Math.atan2(dragStart.y-center.y, dragStart.x-center.x);
+      const a2 = Math.atan2(ev.position.y-center.y, ev.position.x-center.x);
+      let delta = (a2-a1)*180/Math.PI;
+      a.angleDeg = (a.angleDeg || 0) + delta;
+      dragStart = ev.position;
+    } else {
+      const sVP = viewer.viewport.pointFromPixel(dragStart);
+      const cVP = viewer.viewport.pointFromPixel(ev.position);
+      if(viewer.world.getItemCount()===0) return;
+      const sImg = viewer.world.getItemAt(0).viewportToImageCoordinates(sVP);
+      const cImg = viewer.world.getItemAt(0).viewportToImageCoordinates(cVP);
+      a.anchor.x = clamp(a.anchor.x + (cImg.x - sImg.x), 0, currentImage.width);
+      a.anchor.y = clamp(a.anchor.y + (cImg.y - sImg.y), 0, currentImage.height);
+      dragStart = ev.position;
+      try{ if (dragLockedViewportCenter) viewer.viewport.panTo(dragLockedViewportCenter, true); }catch(e){}
+    }
+  });
+  viewer.addHandler('canvas-release', ()=>{ isDragging=false; rotateMode=false; dragLockedViewportCenter = null; });
+  viewer.addHandler('canvas-hover', (ev)=>{
+    if (!currentImage) { hoverId = null; return; }
+    hoverId = pickAnnotation(ev.position);
+    stage.style.cursor = hoverId ? 'pointer' : (addMode ? 'crosshair' : 'default');
+  });
+
+document.addEventListener('keydown', (e) => {
+    const isEditing = e.target.tagName === 'INPUT' || 
+                      e.target.tagName === 'TEXTAREA' || 
+                      e.target.isContentEditable ||
+                      e.target.tagName === 'SELECT';
+    if (isEditing) return;
+
+    const key = e.key.toLowerCase();
+    const myShortcuts = ['e', 't', 'v', 'p', '[', ']', ';', "'", 'delete'];
+    
+    if (myShortcuts.includes(key)) {
+        e.stopPropagation();
+        e.preventDefault();
+
+        if (key === 'e') { 
+            const t = document.getElementById('editModeToggle'); 
+            if(t) { t.checked = !t.checked; t.dispatchEvent(new Event('change')); }
+            return; 
+        }
+        if (key === 't') { toggleAddMode(); return; }
+        if (key === 'v') { 
+            if (showAllMode) document.getElementById('browseFilterBtn').click(); 
+            else document.getElementById('showAllBtn').click(); 
+            return; 
+        }
+        
+        if (key === 'delete' && selectedId){
+            if (!editMode) return;
+            const i = annotations.findIndex(a => a.id === selectedId);
+            if (i >= 0) annotations.splice(i, 1);
+            selectedId = null; rebuildIndex(); refreshAnnList();
+            return;
+        }
+
+        if (selectedId) {
+            if (!editMode) return;
+            const a = annotations.find(x => x.id === selectedId); 
+            if (!a) return;
+            const elFontSize = document.getElementById('fontSize');
+            const elSpacing = document.getElementById('letterSpacing');
+            const elOrient = document.getElementById('orientation');
+
+            switch(key) {
+                case "'": a.style.fontSizePxAtScale1++; elFontSize.value = a.style.fontSizePxAtScale1; break;
+                case ";": a.style.fontSizePxAtScale1 = Math.max(1, a.style.fontSizePxAtScale1 - 1); elFontSize.value = a.style.fontSizePxAtScale1; break;
+                case "]": a.style.letterSpacing += 0.5; elSpacing.value = a.style.letterSpacing; break;
+                case "[": a.style.letterSpacing = Math.max(0, a.style.letterSpacing - 0.5); elSpacing.value = a.style.letterSpacing; break;
+                case 'p': a.orientation = (a.orientation === 'vertical') ? 'horizontal' : 'vertical'; elOrient.value = a.orientation; refreshAnnList(); break;
+            }
+        }
+    }
+}, true);
+}
+
+async function loadLargeImage(file) {
+    const loading = document.getElementById('loadingOverlay');
+    const progressFill = document.getElementById('loadProgress');
+    const loadingText = document.getElementById('loadingText');
+    const setProgress = (pct, text) => {
+        progressFill.style.width = pct + '%';
+        if(text) loadingText.textContent = text;
+    };
+    loading.style.display='flex';
+    setProgress(1, '初始化文件...');
+
+    try {
+        const lowerName = file.name.toLowerCase();
+        const id = file.name.replace(/\.[^.]+$/, '');
+        viewer.world.removeAll();
+
+        if (file.type === 'image/tiff' || lowerName.endsWith('.tif') || lowerName.endsWith('.tiff')) {
+            if (!tiffPool) tiffPool = new GeoTIFF.Pool();
+            await loadGeoTIFF(file, id, setProgress);
+        } else {
+            await loadStandardImage(file, id, setProgress);
+        }
+
+        loading.style.display='none';
+        updateStatus();
+        annotations = normalizeAnnotations(annotations, id).filter(a=>a.mapId===id);
+        rebuildIndex();
+
+    } catch (err) {
+        console.error(err);
+        alert("加载失败: " + err.message + "\n请尝试刷新页面。");
+        loading.style.display='none';
+    }
+}
+
+async function loadStandardImage(file, id, setProgress) {
+    setProgress(30, '解码图像 (Native)...');
+    const bitmap = await createImageBitmap(file);
+    const width = bitmap.width;
+    const height = bitmap.height;
+    
+    currentImage = { id, width, height, bitmap, type: 'bitmap' };
+    setProgress(90, '生成图层...');
+    
+    const tileSource = {
+        width: width, height: height, tileSize: TILE_SIZE,
+        minLevel: 0, maxLevel: Math.ceil(Math.log2(Math.max(width, height))),
+        getTileUrl: (level, x, y) => `virtual_std_${level}_${x}_${y}`,
+        downloadTileStart: function(context) {
+            const parts = context.src.split('_');
+            const level = parseInt(parts[2]), x = parseInt(parts[3]), y = parseInt(parts[4]);
+            const blob = sliceBitmap(currentImage.bitmap, width, height, level, x, y);
+            if (blob) {
+                const img = new Image();
+                const url = URL.createObjectURL(blob);
+                img.onload = () => { context.finish(img); URL.revokeObjectURL(url); };
+                img.onerror = () => context.finish(null);
+                img.src = url;
+            } else { context.finish(null); }
+        }
+    };
+    
+    return new Promise((resolve, reject) => {
+        viewer.addTiledImage({ tileSource, success: resolve, error: reject });
+    });
+}
+
+function sliceBitmap(bitmap, fullW, fullH, level, x, y) {
+    const maxLevel = Math.ceil(Math.log2(Math.max(fullW, fullH)));
+    const scale = Math.pow(0.5, maxLevel - level);
+    const regionW = TILE_SIZE / scale;
+    const regionH = TILE_SIZE / scale;
+    const regionX = x * regionW;
+    const regionY = y * regionH;
+    if (regionX >= fullW || regionY >= fullH) return null;
+    tempCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+    tempCtx.drawImage(bitmap, regionX, regionY, regionW, regionH, 0, 0, TILE_SIZE, TILE_SIZE);
+    return dataURItoBlob(tempCanvas.toDataURL('image/jpeg', 0.8));
+}
+
+// GeoTIFF 核心修复
+async function loadGeoTIFF(file, id, setProgress) {
+    setProgress(5, '解析 TIFF 结构...');
+    const tiff = await GeoTIFF.fromBlob(file); 
+    const firstImage = await tiff.getImage(); 
+    const width = firstImage.getWidth();
+    const height = firstImage.getHeight();
+    
+    const imageCount = await tiff.getImageCount();
+    const tiffImages = [];
+    for(let i=0; i<imageCount; i++){
+        const img = await tiff.getImage(i);
+        tiffImages.push({ index: i, width: img.getWidth(), height: img.getHeight(), instance: img });
+    }
+    tiffImages.sort((a,b)=>b.width - a.width);
+
+    let overviewCanvas = null;
+    const needSynthetic = tiffImages.length === 1; 
+    
+    if (needSynthetic) {
+        setProgress(10, '构建概览图...');
+        
+        const TARGET_WIDTH = 2048;
+        const scaleFactor = TARGET_WIDTH / width;
+        const TARGET_HEIGHT = Math.floor(height * scaleFactor);
+        
+        overviewCanvas = document.createElement('canvas');
+        overviewCanvas.width = TARGET_WIDTH;
+        overviewCanvas.height = TARGET_HEIGHT;
+        const ovCtx = overviewCanvas.getContext('2d');
+        
+        // 关键修复：使用 256x256 的固定 Chunk，避免浮点数导致的斜线错位
+        const CHUNK_SIZE = 2048; // 读取的大块
+        const MINI_TILE = 256;   // 渲染时的中间缓冲
+        
+        const cols = Math.ceil(width / CHUNK_SIZE);
+        const rows = Math.ceil(height / CHUNK_SIZE);
+        const totalChunks = cols * rows;
+        let processed = 0;
+        const promises = [];
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const chunkX = c * CHUNK_SIZE;
+                const chunkY = r * CHUNK_SIZE;
+                const chunkW = Math.min(CHUNK_SIZE, width - chunkX);
+                const chunkH = Math.min(CHUNK_SIZE, height - chunkY);
+
+                // 目标位置 (浮点数，用于 drawImage)
+                const destX = chunkX * scaleFactor;
+                const destY = chunkY * scaleFactor;
+                const destW = chunkW * scaleFactor;
+                const destH = chunkH * scaleFactor;
+
+                // 核心修复：
+                // 我们不让 Worker 缩放到 destW (浮点数)，而是缩放到一个固定的整数尺寸
+                // 这样 ImageData 构造就是安全的。
+                // 比如我们把这个 Chunk 缩放到 256px (或者按比例缩放但取整)
+                // 为了简单且不失真，我们设定一个合理的缓冲尺寸
+                const bufferW = Math.ceil(destW);
+                const bufferH = Math.ceil(destH);
+
+                promises.push(
+                    firstImage.readRasters({
+                        window: [chunkX, chunkY, chunkX + chunkW, chunkY + chunkH],
+                        width: bufferW, 
+                        height: bufferH,
+                        interleave: true,
+                        pool: tiffPool
+                    }).then(raster => {
+                        // 1. 创建严格匹配 bufferW/H 的 ImageData -> 消除斜线
+                        const iData = new ImageData(bufferW, bufferH);
+                        const arr = raster;
+                        const data = iData.data;
+                        let j = 0;
+                        const len = bufferW * bufferH;
+                        
+                        // 兼容 RGB / Grayscale
+                        if (arr.length >= len * 3) {
+                             for (let i = 0; i < len; i++) {
+                                data[j] = arr[i*3]; data[j+1]=arr[i*3+1]; data[j+2]=arr[i*3+2]; data[j+3]=255;
+                                j+=4;
+                            }
+                        } else {
+                             for (let i = 0; i < len; i++) {
+                                const v = arr[i]; data[j]=v; data[j+1]=v; data[j+2]=v; data[j+3]=255; 
+                                j+=4;
+                            }
+                        }
+
+                        // 2. 放入临时 Canvas
+                        const tCanvas = document.createElement('canvas');
+                        tCanvas.width = bufferW; tCanvas.height = bufferH;
+                        tCanvas.getContext('2d').putImageData(iData, 0, 0);
+                        
+                        // 3. 使用 drawImage 绘制到概览图 -> 消除黑线缝隙
+                        // drawImage 允许 destX/Y 是小数，会自动处理抗锯齿和缝隙
+                        ovCtx.drawImage(tCanvas, 
+                            0, 0, bufferW, bufferH, 
+                            destX, destY, destW, destH 
+                        );
+                        
+                        processed++;
+                        setProgress(10 + Math.floor((processed/totalChunks)*80), `构建预览 ${processed}/${totalChunks}`);
+                    })
+                );
+            }
+        }
+        await Promise.all(promises);
+    }
+    
+    currentImage = { id, width, height, tiff, tiffImages, overviewCanvas, type: 'tiff' };
+    setProgress(95, '初始化渲染...');
+
+    const tileSource = {
+        width: width, height: height, tileSize: TILE_SIZE,
+        minLevel: 0, maxLevel: Math.ceil(Math.log2(Math.max(width, height))),
+        getTileUrl: (level, x, y) => `virtual_tif_${level}_${x}_${y}`,
+        downloadTileStart: function(context) {
+            const parts = context.src.split('_');
+            const level = parseInt(parts[2]), x = parseInt(parts[3]), y = parseInt(parts[4]);
+            
+            const maxLevel = Math.ceil(Math.log2(Math.max(width, height)));
+            const scale = Math.pow(0.5, maxLevel - level);
+            const tileW_in_Original = TILE_SIZE / scale;
+            
+            // 策略：缩小查看时直接使用概览图
+            if (currentImage.overviewCanvas && tileW_in_Original > 1024) {
+                const blob = sliceCanvas(currentImage.overviewCanvas, width, height, level, x, y);
+                if (blob) {
+                    const img = new Image();
+                    const url = URL.createObjectURL(blob);
+                    img.onload = () => { context.finish(img); URL.revokeObjectURL(url); };
+                    img.src = url;
+                    return; 
+                }
+            }
+
+            // 高清读取
+            const levelFullWidth = width * scale;
+            let bestImage = tiffImages[0];
+            for(let i=0; i<tiffImages.length; i++) {
+                if (tiffImages[i].width >= levelFullWidth / 1.5) { 
+                    bestImage = tiffImages[i];
+                }
+            }
+            
+            const ratio = bestImage.width / width;
+            const regionW_Full = TILE_SIZE / scale;
+            const regionX_Full = x * regionW_Full;
+            const regionY_Full = y * regionW_Full;
+            
+            const readX = Math.floor(regionX_Full * ratio);
+            const readY = Math.floor(regionY_Full * ratio);
+            const readW = Math.floor(regionW_Full * ratio);
+            const readH = Math.floor(regionW_Full * ratio);
+
+            if (readX >= bestImage.width || readY >= bestImage.height) { context.finish(null); return; }
+            const finalReadW = Math.min(readW, bestImage.width - readX);
+            const finalReadH = Math.min(readH, bestImage.height - readY);
+
+            bestImage.instance.readRasters({
+                window: [readX, readY, readX + finalReadW, readY + finalReadH],
+                width: TILE_SIZE, height: TILE_SIZE,
+                interleave: true,
+                pool: tiffPool
+            }).then((raster) => {
+                const tileCanvas = document.createElement('canvas');
+                tileCanvas.width = TILE_SIZE; tileCanvas.height = TILE_SIZE;
+                const tileCtx = tileCanvas.getContext('2d');
+                const imgData = tileCtx.createImageData(TILE_SIZE, TILE_SIZE);
+                const data = imgData.data;
+                const arr = raster;
+                let j = 0;
+                
+                const len = TILE_SIZE*TILE_SIZE;
+                if (arr.length >= len*3) {
+                     for (let i = 0; i < len; i++) {
+                        data[j] = arr[i*3]; data[j+1] = arr[i*3+1]; data[j+2] = arr[i*3+2]; data[j+3] = 255; 
+                        j += 4;
+                    }
+                } else {
+                     for (let i = 0; i < len; i++) {
+                        const v = arr[i]; data[j]=v; data[j+1]=v; data[j+2]=v; data[j+3]=255; 
+                        j += 4;
+                    }
+                }
+                tileCtx.putImageData(imgData, 0, 0);
+                context.finish(tileCanvas);
+
+            }).catch(e => {
+                context.finish(null);
+            });
+        }
+    };
+    
+    return new Promise((resolve, reject) => {
+        viewer.addTiledImage({ tileSource, success: resolve, error: reject });
+    });
+}
+
+function sliceCanvas(sourceCanvas, fullW, fullH, level, x, y) {
+    const maxLevel = Math.ceil(Math.log2(Math.max(fullW, fullH)));
+    const scale = Math.pow(0.5, maxLevel - level);
+    
+    const regionW = TILE_SIZE / scale;
+    const regionH = TILE_SIZE / scale;
+    const regionX = x * regionW;
+    const regionY = y * regionH;
+    
+    if (regionX >= fullW || regionY >= fullH) return null;
+    
+    const canvasScale = sourceCanvas.width / fullW;
+    const sx = regionX * canvasScale;
+    const sy = regionY * canvasScale;
+    const sWidth = regionW * canvasScale;
+    const sHeight = regionH * canvasScale;
+    
+    tempCtx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+    // drawImage handles sub-pixel cropping automatically
+    tempCtx.drawImage(sourceCanvas, sx, sy, sWidth, sHeight, 0, 0, TILE_SIZE, TILE_SIZE);
+    
+    return dataURItoBlob(tempCanvas.toDataURL('image/jpeg', 0.85)); 
+}
+
+function dataURItoBlob(dataURI) {
+  const byteString = atob(dataURI.split(',')[1]);
+  const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
+  const ab = new ArrayBuffer(byteString.length);
+  const ia = new Uint8Array(ab);
+  for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+  return new Blob([ab], {type: mimeString});
+}
+
+// Draw Loop (No changes needed)
+function draw(){
+  if (!viewer || !currentImage || viewer.world.getItemCount() === 0) {
+      requestAnimationFrame(draw); return; 
+  }
+  const size = viewer.viewport.getContainerSize();
+  overlayCanvas.width = size.x; overlayCanvas.height = size.y;
+  ctx.clearRect(0,0,overlayCanvas.width,overlayCanvas.height);
+  const ppp = pixelsPerImagePixel();
+  const vpBounds = viewer.viewport.getBounds(true);
+  const imgBounds = viewer.world.getItemAt(0).viewportToImageRectangle(vpBounds);
+  const buffer = 500 / viewer.viewport.getZoom(); 
+  const viewLeft = imgBounds.x - buffer; const viewRight = imgBounds.x + imgBounds.width + buffer;
+  const viewTop = imgBounds.y - buffer; const viewBottom = imgBounds.y + imgBounds.height + buffer;
+  annotations.forEach(a=>{
+    if (a.anchor.x < viewLeft || a.anchor.x > viewRight || a.anchor.y < viewTop || a.anchor.y > viewBottom) return; 
+    let visible = true;
+    if (browseFilterMode){ visible = (a.id===hoverId) || (a.id===selectedId) || !!a._alwaysVisible; } 
+    else if (!showAllMode){ visible = a._visible ?? true; }
+    if (!visible) return;
+    const pt = imagePointToScreenPx(a.anchor.x, a.anchor.y);
+    const scale = lockScreenFont ? 1 : ppp;
+    const fontPx = (a.style?.fontSizePxAtScale1 ?? 22) * scale;
+    const spacing = (a.style?.letterSpacing ?? 1.5) * scale;
+    const fill = a.style?.fill ?? '#000000';
+    const alpha = typeof a.meta?.opacity === 'number' ? clamp(a.meta.opacity,0,1) : 1;
+    const strokeColor = a.style?.stroke?.color ?? '#ffffff';
+    const strokeW = (a.style?.stroke?.width ?? 2) * scale;
+    const isVertical = (a.orientation === 'vertical');
+    ctx.save(); ctx.translate(pt.x, pt.y);
+    if (a.angleDeg) ctx.rotate(deg2rad(a.angleDeg));
+    ctx.font = `${fontPx}px "${a.style?.fontFamily || 'Noto Serif SC'}, serif"`;
+    ctx.textBaseline = 'middle'; ctx.textAlign = isVertical ? 'center' : 'left'; 
+    ctx.globalAlpha = alpha;
+    if (strokeW>0){ ctx.lineWidth = strokeW; ctx.strokeStyle = strokeColor; drawText(ctx,a,spacing,true); }
+    ctx.fillStyle = fill; drawText(ctx,a,spacing,false);
+    ctx.globalAlpha = 1;
+    if (a.id===selectedId){
+      ctx.lineWidth=1; ctx.strokeStyle='#2563eb'; ctx.setLineDash([4,3]);
+      const bounds = measureBounds(ctx,a,spacing,scale,fontPx);
+      ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  });
+  if (editorEl && editorTargetId){
+    const a = annotations.find(x=>x.id===editorTargetId);
+    if (a){
+      const pt = imagePointToScreenPx(a.anchor.x, a.anchor.y);
+      if (a.orientation === 'vertical') { editorEl.style.left = (pt.x - editorEl.offsetWidth/2) + 'px'; editorEl.style.top = (pt.y - editorEl.offsetHeight/2) + 'px'; } 
+      else { editorEl.style.left = (pt.x) + 'px'; editorEl.style.top = (pt.y - editorEl.offsetHeight/2) + 'px'; }
+      if (editorHint){ editorHint.style.left = pt.x+'px'; editorHint.style.top = (pt.y - editorEl.offsetHeight/2 - 24) + 'px'; }
+    }
+  }
+  requestAnimationFrame(draw);
+}
+function drawText(ctx, a, spacing, stroke){
+  if (a.orientation === 'vertical'){
+    let totalHeight = 0;
+    for(const ch of a.text) { totalHeight += ctx.measureText(ch).actualBoundingBoxAscent + ctx.measureText(ch).actualBoundingBoxDescent + spacing; }
+    totalHeight -= spacing; let currentYOffset = -totalHeight / 2; 
+    for (const ch of a.text){
+      const m = ctx.measureText(ch); const chH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent; const drawY = currentYOffset + chH/2; 
+      if (stroke) ctx.strokeText(ch, 0, drawY); else ctx.fillText(ch, 0, drawY);
+      currentYOffset += chH + spacing;
+    }
+  } else {
+    let curX = 0;
+    for (const ch of a.text){ if (stroke) ctx.strokeText(ch, curX, 0); else ctx.fillText(ch, curX, 0); curX += ctx.measureText(ch).width + spacing; }
+  }
+}
+function measureBounds(ctx, a, spacing, scale, fontPx){
+  if (a.orientation === 'vertical'){
+    let totalH = 0, maxW = 0;
+    for (const ch of a.text){
+      const m = ctx.measureText(ch); totalH += m.actualBoundingBoxAscent + m.actualBoundingBoxDescent + spacing; maxW = Math.max(maxW, m.width);
+    }
+    totalH -= spacing; const padding = 4 * scale;
+    return { x: -maxW/2 - padding, y: -totalH/2 - padding, w: maxW + padding*2, h: totalH + padding*2 };
+  } else {
+    const m = ctx.measureText(a.text); let w = 0;
+    for (const ch of a.text) w += ctx.measureText(ch).width + spacing;
+    w -= spacing; const h = fontPx * 1.2; const padding = 4 * scale;
+    return { x: -padding, y: -h/2 - padding, w: w + padding*2, h: h + padding*2 };
+  }
+}
+function toggleAddMode(force){ if (!editMode && force !== false) return; addMode = typeof force === 'boolean' ? force : !addMode; const btn = document.getElementById('addModeBtn'); btn.classList.toggle('toggled', addMode); btn.textContent = addMode ? '添加中…（再点退出）' : '添加注记'; updateStatus(); }
+function pickAnnotation(screenPoint){ if (!viewer || viewer.world.getItemCount()===0) return null; const ppp = pixelsPerImagePixel(); for (let i=annotations.length-1; i>=0; i--){ const a = annotations[i]; const pt = imagePointToScreenPx(a.anchor.x, a.anchor.y); const scale = (lockScreenFont?1:ppp); ctx.save(); ctx.translate(pt.x, pt.y); if(a.angleDeg) ctx.rotate(deg2rad(a.angleDeg)); const fontPx = (a.style?.fontSizePxAtScale1 ?? 22) * scale; ctx.font = `${fontPx}px "${a.style?.fontFamily || 'Noto Serif SC'}, serif"`; const spacing = (a.style?.letterSpacing ?? 1.5) * scale; const bounds = measureBounds(ctx,a,spacing,scale,fontPx); ctx.restore(); const dx = screenPoint.x - pt.x; const dy = screenPoint.y - pt.y; let localX = dx, localY = dy; if (a.angleDeg) { const rad = -deg2rad(a.angleDeg); localX = dx * Math.cos(rad) - dy * Math.sin(rad); localY = dx * Math.sin(rad) + dy * Math.cos(rad); } if (localX >= bounds.x && localX <= bounds.x + bounds.w && localY >= bounds.y && localY <= bounds.y + bounds.h){ return a.id; } } return null; }
+function createAnnotationAt(x,y){ const ann = { id: uid(), mapId: currentImage.id, text: '新注记', aliases: [], anchor: {x,y}, orientation: document.getElementById('orientation').value || 'horizontal', style: { fontFamily:'Noto Serif SC', fontSizePxAtScale1: parseFloat(document.getElementById('fontSize').value)||22, letterSpacing: parseFloat(document.getElementById('letterSpacing').value)||1.5, fill: '#000000', stroke: { color: '#ffffff', width: 2 } }, meta:{category:'toponym',lang:'zh',script:'Hans',source:'manual'}, confidence:1.0, review:{status:'verified',by:'user',at:new Date().toISOString()} }; annotations.push(ann); rebuildIndex(); refreshAnnList(); return ann; }
+function openInlineEditor(id, selectAll){ const a = annotations.find(x=>x.id===id); if (!a) return; closeInlineEditor(); const pt = imagePointToScreenPx(a.anchor.x, a.anchor.y); editorEl = document.createElement('div'); editorEl.className='editor'; editorEl.contentEditable='true'; editorEl.textContent = a.text; stage.appendChild(editorEl); editorHint = document.createElement('div'); editorHint.className='floating-hint'; editorHint.textContent='Enter 保存 · Esc 取消'; stage.appendChild(editorHint); editorTargetId = id; if (a.orientation === 'vertical') { editorEl.style.left = (pt.x - 40) + 'px'; } else { editorEl.style.left = pt.x + 'px'; } editorEl.style.top = pt.y + 'px'; editorEl.focus(); if (selectAll){ const r = document.createRange(); r.selectNodeContents(editorEl); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); } const confirmSave = ()=>{ if (!editorEl) return; const t = editorEl.textContent.trim(); if (t.length===0){ const i = annotations.findIndex(x=>x.id===id); if (i>=0) annotations.splice(i,1); selectedId=null; } else { a.text = t; selectedId = id; } closeInlineEditor(); rebuildIndex(); refreshAnnList(); }; const cancelEdit = ()=>{ closeInlineEditor(); refreshAnnList(); }; editorEl.addEventListener('keydown',(e)=>{ if (e.key==='Enter' && !e.shiftKey){ e.preventDefault(); confirmSave(); } if (e.key==='Escape'){ e.preventDefault(); cancelEdit(); } }); setTimeout(() => { const outside = (e)=>{ if (!editorEl) return; if (e.target!==editorEl) { confirmSave(); document.removeEventListener('mousedown', outside); } }; document.addEventListener('mousedown', outside); }, 100); }
+function closeInlineEditor(){ if (editorEl){ editorEl.remove(); editorEl=null; } if (editorHint){ editorHint.remove(); editorHint=null; } editorTargetId=null; }
+function rebuildIndex(){ annotations = normalizeAnnotations(annotations, currentImage?.id || null); fuse = new Fuse(annotations.map(a=>({id:a.id,text:a.text,aliases:a.aliases||[]})), { includeScore:true, keys:['text','aliases'], threshold:.35, ignoreLocation:true }); refreshAnnList(); }
+function exportJSON(){ if (!currentImage) { alert('尚未加载地图'); return; } const validAnnotations = normalizeAnnotations(annotations, currentImage.id).filter(a => a.mapId === currentImage.id || !a.mapId); const tile = {type:'image'}; if (currentImage.url) tile.url = currentImage.url; const data = { version:'0.1', maps:[{ id:currentImage.id, title:currentImage.title||currentImage.id, pixelSize:{width:currentImage.width,height:currentImage.height}, tile, georef:{type:'none'} }], annotations: validAnnotations }; const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${currentImage.id}_annotations.json`; a.click(); URL.revokeObjectURL(a.href); }
+function importJSONFile(file){ const reader = new FileReader(); reader.onload = ()=>{ try{ const obj = JSON.parse(reader.result); if (obj.annotations) { annotations = normalizeAnnotations(obj.annotations, currentImage?.id || null); if (currentImage) annotations = annotations.filter(a => a.mapId===currentImage.id || !a.mapId); rebuildIndex(); refreshAnnList(); alert(`JSON 注记已导入：${annotations.length} 条有效记录。请确保已加载对应的地图图片。`); } else { alert('JSON 中未找到 annotations 数组。'); } }catch(e){ alert('JSON 解析失败：'+e.message); } }; reader.readAsText(file); }
+
+function refreshAnnList(){ 
+  const box = document.getElementById('annList'); 
+  box.innerHTML=''; 
+  annotations.forEach(a=>{ 
+    const div=document.createElement('div'); 
+    div.className='item'+(a.id===selectedId?' active':''); 
+    div.id='list-item-'+a.id; // 新增：为每个列表项赋予独立 ID
+    const opacity = typeof a.meta?.opacity === 'number' ? a.meta.opacity : 1; 
+    const orientation = document.createElement('span');
+    orientation.className = 'pill';
+    orientation.textContent = a.orientation==='vertical'?'竖排':'横排';
+    const text = document.createElement('strong');
+    text.className = 'grow';
+    text.textContent = a.text;
+    const label = document.createElement('label');
+    label.style.marginLeft = '.4rem';
+    label.appendChild(document.createTextNode('透明度'));
+    const opacityInput = document.createElement('input');
+    opacityInput.dataset.id = a.id;
+    opacityInput.className = 'opacityInput';
+    opacityInput.type = 'number';
+    opacityInput.min = '0';
+    opacityInput.max = '1';
+    opacityInput.step = '0.05';
+    opacityInput.value = opacity;
+    opacityInput.style.width = '4.5rem';
+    opacityInput.style.marginLeft = '.25rem';
+    opacityInput.disabled = !editMode;
+    label.appendChild(opacityInput);
+    const editButton = document.createElement('button');
+    editButton.className = 'btn secondary';
+    editButton.style.marginLeft = '.4rem';
+    editButton.disabled = !editMode;
+    editButton.textContent = '编辑';
+    div.appendChild(orientation);
+    div.appendChild(text);
+    div.appendChild(label);
+    div.appendChild(editButton);
+    div.onclick = (ev)=>{ 
+      if (ev.target.tagName.toLowerCase()==='button'){ 
+        if(!editMode)return; 
+        openInlineEditor(a.id, true); 
+        ev.stopPropagation(); 
+        return; 
+      } 
+      selectedId = a.id; 
+      centerOnAnnotation(a.id); 
+      refreshAnnList(); 
+    }; 
+    box.appendChild(div); 
+  }); 
+  document.getElementById('selectedInfo').textContent = selectedId ? `选中：${annotations.find(x=>x.id===selectedId)?.text}` : '未选中注记'; 
+  updateStatus(); 
+}
+
+function renderSearchResults(results){ 
+  const box = document.getElementById('searchResults'); 
+  box.innerHTML=''; 
+  results.slice(0,50).forEach(r=>{ 
+    const a = annotations.find(x=>x.id===r.item.id); 
+    if (!a) return; 
+    const div=document.createElement('div'); 
+    div.className='item'; 
+    const score = document.createElement('span');
+    score.className = 'pill';
+    score.textContent = r.score.toFixed(2);
+    const text = document.createElement('strong');
+    text.className = 'grow';
+    text.textContent = a.text;
+    const action = document.createElement('span');
+    action.className = 'muted';
+    action.textContent = '定位';
+    div.appendChild(score);
+    div.appendChild(text);
+    div.appendChild(action);
+    div.onclick = ()=>{ 
+      selectedId=a.id; 
+      centerOnAnnotation(a.id); 
+      refreshAnnList(); 
+      // 新增：自动平滑滚动到“当前标注”列表中对应的条目
+      const targetItem = document.getElementById('list-item-' + a.id);
+      if(targetItem) {
+        targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }; 
+    box.appendChild(div); 
+  }); 
+}
+
+function centerOnAnnotation(id){ const a = annotations.find(x=>x.id===id); if (!a || !currentImage) return; const vp = viewer.world.getItemAt(0).imageToViewportCoordinates(new OpenSeadragon.Point(a.anchor.x,a.anchor.y)); viewer.viewport.panTo(vp,false); const targetZoom = Math.max(viewer.viewport.getZoom(), 1.5); viewer.viewport.zoomTo(targetZoom); }
+function initControls(){ const imgFile = document.getElementById('imgFile'); imgFile.addEventListener('change',(e)=>{ const f=e.target.files[0]; if (!f) return; loadLargeImage(f); }); document.getElementById('importJsonBtn').onclick = ()=> document.getElementById('jsonFile').click(); 
+// 绑定地图库弹窗：每次打开时都重新获取一次列表
+  document.getElementById('mapLibraryBtn').onclick = () => { 
+    document.getElementById('mapLibraryModal').classList.add('show'); 
+    fetchMapListFromCOS(); 
+  };
+// 地图库工具栏交互绑定
+  document.getElementById('filterAnnotated').addEventListener('change', () => {
+    applyLibraryFilters();
+  });
+
+  document.getElementById('searchNameBtn').onclick = () => {
+    currentSearchMode = 'name';
+    applyLibraryFilters();
+  };
+
+  document.getElementById('searchAnnBtn').onclick = () => {
+    executeAnnotationSearch();
+  };
+
+  // 搜索框按回车默认触发“搜索图名”
+  document.getElementById('librarySearchInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      currentSearchMode = 'name';
+      applyLibraryFilters();
+    }
+  });
+document.getElementById('closeLibraryBtn').onclick = () => document.getElementById('mapLibraryModal').classList.remove('show');
+document.getElementById('jsonFile').addEventListener('change', (e)=>{ const f=e.target.files[0]; if (f) importJSONFile(f); }); document.getElementById('exportJsonBtn').onclick = exportJSON; const doSearch = ()=>{ const q = document.getElementById('searchInput').value.trim(); if (!q || !fuse) { renderSearchResults([]); return; } renderSearchResults(fuse.search(q)); }; document.getElementById('searchBtn').onclick = doSearch; document.getElementById('searchInput').addEventListener('keydown', (e)=>{ if (e.key==='Enter') doSearch(); }); document.getElementById('addModeBtn').onclick = ()=> toggleAddMode(); const browseBtn = document.getElementById('browseFilterBtn'); const showAllBtnEl = document.getElementById('showAllBtn'); function setMode(mode){ if (mode==='browse'){ browseFilterMode = true; showAllMode = false; browseBtn.classList.add('toggled'); showAllBtnEl.classList.remove('toggled'); } else if (mode==='all'){ browseFilterMode = false; showAllMode = true; browseBtn.classList.remove('toggled'); showAllBtnEl.classList.add('toggled'); } hoverId = null; refreshAnnList(); } browseBtn.onclick = ()=>{ setMode(browseFilterMode ? 'all' : 'browse'); }; showAllBtnEl.onclick = ()=>{ setMode(showAllMode ? 'browse' : 'all'); }; document.getElementById('editModeToggle').addEventListener('change', (e)=>{ editMode = e.target.checked; document.getElementById('addModeBtn').disabled = !editMode; document.getElementById('fontSize').disabled = !editMode; document.getElementById('letterSpacing').disabled = !editMode; document.getElementById('orientation').disabled = !editMode; document.getElementById('clearAllBtn').disabled = !editMode; if (!editMode && addMode) toggleAddMode(false); refreshAnnList(); }); 
+document.getElementById('clearAllBtn').onclick = () => {
+    if (!editMode) return;
+    if (!currentImage) return;
+    if (annotations.length === 0) return; // 如果已经空了就不再弹窗
+    if (confirm('⚠️ 警告：确定要清空当前地图的所有标注吗？\n此操作不可恢复！')) {
+      // 过滤掉当前地图的标注，保留其他地图可能已有的标注
+      annotations = annotations.filter(a => a.mapId !== currentImage.id);
+      selectedId = null;
+      rebuildIndex();
+      refreshAnnList();
+    }
+  };
+document.getElementById('annList').addEventListener('input', (e)=>{ if(!editMode){ e.target.value = e.target.defaultValue; return; } const t = e.target; if (!t || !t.classList.contains('opacityInput')) return; const id = t.getAttribute('data-id'); const val = parseFloat(t.value); const a = annotations.find(x=>x.id===id); if (!a) return; a.meta = a.meta || {}; a.meta.opacity = clamp(isNaN(val)?1:val,0,1); refreshAnnList(); }); window.addEventListener('mouseup', ()=>{ if (!isDragging){ dragLockedViewportCenter = null; } }); document.getElementById('fontSize').addEventListener('input', (e)=>{ if(!editMode)return; if (selectedId){ const a=annotations.find(x=>x.id===selectedId); if (a) a.style.fontSizePxAtScale1=parseFloat(e.target.value)||22; } }); document.getElementById('letterSpacing').addEventListener('input', (e)=>{ if(!editMode)return; if (selectedId){ const a=annotations.find(x=>x.id===selectedId); if (a) a.style.letterSpacing=parseFloat(e.target.value)||1.5; } }); document.getElementById('orientation').addEventListener('change', (e)=>{ if(!editMode)return; if (selectedId){ const a=annotations.find(x=>x.id===selectedId); if (a) a.orientation=e.target.value; refreshAnnList(); } }); document.getElementById('lockScreenFont').addEventListener('change', (e)=>{ lockScreenFont = e.target.checked; }); }
+window.addEventListener('DOMContentLoaded', ()=>{ initViewer(); initControls(); rebuildIndex(); updateStatus(); });
+</script>
+</body>
+</html>
